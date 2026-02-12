@@ -114,19 +114,62 @@ func getOSName() string {
 	}
 }
 
-// getLocalIP returns the local IP address
+// getLocalIP returns the local IP address (prefers 192.168.x.x or 10.x.x.x addresses)
 func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "unknown"
 	}
 
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+	var fallbackIP string
+
+	for _, iface := range interfaces {
+		// Skip down, loopback, and virtual interfaces
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+
+			ip := ipnet.IP.To4()
+			if ip == nil {
+				continue
+			}
+
+			// Skip loopback and link-local addresses (169.254.x.x)
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+
+			// Prefer private network addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+			if ip[0] == 192 && ip[1] == 168 {
+				return ip.String()
+			}
+			if ip[0] == 10 {
+				return ip.String()
+			}
+			if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+				return ip.String()
+			}
+
+			// Store as fallback if no private address found
+			if fallbackIP == "" {
+				fallbackIP = ip.String()
 			}
 		}
+	}
+
+	if fallbackIP != "" {
+		return fallbackIP
 	}
 	return "unknown"
 }
