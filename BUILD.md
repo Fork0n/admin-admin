@@ -116,6 +116,6 @@ $env:CGO_ENABLED = 1  # Windows PowerShell
 ### Build works but executable doesn't run (Linux)
 Make sure the executable has execute permissions:
 ```bash
-chmod +x bin/control-system
+chmod +x bin/admin-admin
 ```
 

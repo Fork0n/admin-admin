@@ -1,4 +1,4 @@
-# Desktop Control System
+# admin:admin
 
 A Go-based desktop application with GUI for managing Admin and Worker nodes using the Fyne framework with TCP networking support.
 
@@ -173,7 +173,7 @@ If connection fails, allow the application through Windows Firewall:
 
 ```powershell
 # Run as Administrator
-New-NetFirewallRule -DisplayName "Desktop Control System" -Direction Inbound -Program "D:\adminadmin\bin\control-system.exe" -Action Allow
+New-NetFirewallRule -DisplayName "admin:admin" -Direction Inbound -Program "D:\adminadmin\bin\control-system.exe" -Action Allow
 ```
 
 Or manually:
@@ -182,7 +182,7 @@ Or manually:
 3. Select "Program" and browse to the executable
 4. Select "Allow the connection"
 5. Apply to all profiles (Domain, Private, Public)
-6. Name it "Desktop Control System"
+6. Name it "admin:admin"
 
 ## Verbose Logging
 
@@ -356,7 +356,7 @@ go test ./...
 
 ### Clean Build
 ```powershell
-Remove-Item -Force bin\control-system.exe
+Remove-Item -Force bin\admin-admin*.exe
 .\build.ps1
 ```
 

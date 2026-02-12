@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run script for Desktop Control System
+# Run script for admin:admin
 # Cross-platform run script for Linux/Mac
 
-echo "Running Desktop Control System..."
+echo "Running admin:admin..."
 
 # Enable CGO
 export CGO_ENABLED=1

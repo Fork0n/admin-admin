@@ -9,7 +9,7 @@ import (
 
 func NewAdminDashboard(appState *state.AppState, onConnect func(string), onDisconnect func(), onBack func(), onRefresh func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
-		"Admin Control Panel",
+		"admin:admin - Admin Panel",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
@@ -19,7 +19,7 @@ func NewAdminDashboard(appState *state.AppState, onConnect func(string), onDisco
 	connectionLabel.TextStyle = fyne.TextStyle{Bold: true}
 
 	ipEntry := widget.NewEntry()
-	ipEntry.SetPlaceHolder("192.168.1.100")
+	ipEntry.SetPlaceHolder("192.168.1.100 note: only local network is supported")
 
 	connectButton := widget.NewButton("Connect to Worker", func() {
 		if ipEntry.Text != "" {

@@ -1,7 +1,7 @@
-# Run script for Desktop Control System
+# Run script for admin:admin
 # Cross-platform run script for Windows
 
-Write-Host "Running Desktop Control System..." -ForegroundColor Cyan
+Write-Host "Running admin:admin..." -ForegroundColor Cyan
 
 # Enable CGO
 $env:CGO_ENABLED = 1

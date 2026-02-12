@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,11 @@ type AdminClient struct {
 	conn      net.Conn
 	connected bool
 	onUpdate  func(*state.DeviceInfo)
+}
+
+// contains is a helper function to check if a string contains a substring
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 // NewAdminClient creates a new admin client
@@ -27,18 +33,59 @@ func NewAdminClient(onUpdate func(*state.DeviceInfo)) *AdminClient {
 func (a *AdminClient) Connect(address string, port int) error {
 	addr := fmt.Sprintf("%s:%d", address, port)
 
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	log.Printf("ADMIN: Attempting to connect to worker at %s...\n", addr)
+	log.Println("ADMIN: If this takes a long time, check firewall settings on the Worker PC")
+	log.Println("ADMIN: See FIREWALL.md for setup instructions")
+
+	// Use 60 second timeout for slow networks or first-time connections
+	// This is increased from 30s because firewall prompts can take time
+	dialer := net.Dialer{
+		Timeout:   60 * time.Second,
+		KeepAlive: 15 * time.Second,
+	}
+
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
+		log.Printf("ADMIN ERROR: Failed to connect to %s: %v\n", addr, err)
+		log.Println("ADMIN: ========== TROUBLESHOOTING ==========")
+		log.Println("ADMIN: Possible causes:")
+		log.Println("  1. Worker not running or not in Worker mode")
+		log.Println("  2. Firewall blocking port 9876 on Worker PC")
+		log.Println("  3. Wrong IP address")
+		log.Println("  4. Different network/subnet")
+		log.Println("  5. Antivirus blocking the connection")
+		log.Println("")
+		log.Println("ADMIN: Quick Fix (run on Worker PC as Admin):")
+		log.Println("  New-NetFirewallRule -DisplayName \"admin:admin Worker\" -Direction Inbound -Protocol TCP -LocalPort 9876 -Action Allow")
+		log.Println("ADMIN: ======================================")
+
+		// Provide more helpful error message
+		errMsg := err.Error()
+		if contains(errMsg, "i/o timeout") || contains(errMsg, "timeout") {
+			return fmt.Errorf("connection timeout - check if port 9876 is open on Worker PC firewall. Run on Worker PC as Admin: New-NetFirewallRule -DisplayName \"admin:admin Worker\" -Direction Inbound -Protocol TCP -LocalPort 9876 -Action Allow")
+		} else if contains(errMsg, "connection refused") {
+			return fmt.Errorf("connection refused - make sure the Worker application is running in Worker mode")
+		} else if contains(errMsg, "no route to host") {
+			return fmt.Errorf("no route to host - check if both PCs are on the same network")
+		}
 		return fmt.Errorf("failed to connect to worker: %w", err)
+	}
+
+	// Set TCP keep-alive to detect dead connections
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(15 * time.Second)
 	}
 
 	a.conn = conn
 	a.connected = true
+	log.Printf("ADMIN: TCP connection established to %s\n", addr)
 
 	// Start listening for updates
+	log.Println("ADMIN: Starting receive updates goroutine...")
 	go a.receiveUpdates()
 
-	log.Printf("Connected to worker at %s\n", addr)
+	log.Printf("ADMIN: Successfully connected to worker at %s\n", addr)
 	return nil
 }
 

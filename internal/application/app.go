@@ -5,6 +5,7 @@ import (
 	"adminadmin/internal/state"
 	"adminadmin/internal/ui"
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/dialog"
 	"log"
 )
 
@@ -25,7 +26,7 @@ func NewApp(fyneApp fyne.App) *App {
 
 func (a *App) Run() {
 	log.Println("=== APPLICATION STARTING ===")
-	a.window = a.fyneApp.NewWindow("Desktop Control System")
+	a.window = a.fyneApp.NewWindow("admin:admin")
 	a.window.Resize(fyne.NewSize(800, 600))
 	log.Println("APP: Window created (800x600)")
 
@@ -61,8 +62,8 @@ func (a *App) selectWorkerRole() {
 	a.workerServer = network.NewWorkerServer(network.DefaultWorkerPort)
 	if err := a.workerServer.Start(); err != nil {
 		log.Printf("APP ERROR: Failed to start worker server: %v\n", err)
-		// Show error dialog but continue
-		// TODO: Add error dialog
+		// Show error dialog
+		dialog.ShowError(err, a.window)
 	} else {
 		log.Println("APP: Worker server started successfully")
 	}
@@ -147,7 +148,9 @@ func (a *App) connectToWorker(ip string) {
 	log.Printf("APP: Initiating connection to %s:%d...\n", ip, network.DefaultWorkerPort)
 	if err := a.adminClient.Connect(ip, network.DefaultWorkerPort); err != nil {
 		log.Printf("APP ERROR: Connection failed: %v\n", err)
-		// TODO: Show error dialog
+		// Show error dialog to user
+		dialog.ShowError(err, a.window)
+		a.adminClient = nil
 		return
 	}
 	log.Println("APP: Connection initiated successfully")

@@ -8,7 +8,7 @@ import (
 
 func NewRoleSelectScreen(onAdminSelected func(), onWorkerSelected func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
-		"Desktop Control System",
+		"admin:admin",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)

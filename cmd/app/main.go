@@ -13,7 +13,7 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
 	log.Println("=====================================")
-	log.Println("  Desktop Control System Starting")
+	log.Println("        admin:admin Starting")
 	log.Println("=====================================")
 
 	fyneApp := app.New()
@@ -22,6 +22,6 @@ func main() {
 	application.NewApp(fyneApp).Run()
 
 	log.Println("=====================================")
-	log.Println("  Desktop Control System Exited")
+	log.Println("  admin:admin Exited")
 	log.Println("=====================================")
 }

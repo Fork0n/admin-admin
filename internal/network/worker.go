@@ -33,13 +33,31 @@ func NewWorkerServer(port int) *WorkerServer {
 
 // Start starts the worker server
 func (w *WorkerServer) Start() error {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", w.port))
+	log.Println("=== WORKER: Starting server ===")
+
+	// Get local IP for logging
+	localIP := getLocalIP()
+	log.Printf("WORKER: Local IP address detected: %s\n", localIP)
+
+	// Listen on all interfaces (0.0.0.0) to allow remote connections
+	bindAddr := fmt.Sprintf("0.0.0.0:%d", w.port)
+	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
+		log.Printf("ERROR: Failed to start worker server: %v\n", err)
+		log.Println("ERROR: Port 9876 might already be in use by another application")
 		return fmt.Errorf("failed to start worker server: %w", err)
 	}
 	w.listener = listener
 
-	log.Printf("Worker server listening on port %d\n", w.port)
+	log.Printf("SUCCESS: Worker server listening on %s (port %d)\n", bindAddr, w.port)
+	log.Printf("SUCCESS: Admins can connect using IP: %s\n", localIP)
+	log.Println("")
+	log.Println("=== IMPORTANT: FIREWALL SETUP ===")
+	log.Println("If admin cannot connect, run this command as Administrator:")
+	log.Printf("  New-NetFirewallRule -DisplayName \"admin:admin Worker\" -Direction Inbound -Protocol TCP -LocalPort %d -Action Allow\n", w.port)
+	log.Println("=================================")
+	log.Println("")
+	log.Println("Waiting for admin connections...")
 
 	go w.acceptConnections()
 	return nil

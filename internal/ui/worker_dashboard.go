@@ -11,7 +11,7 @@ import (
 
 func NewWorkerDashboard(onBack func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
-		"Worker Node",
+		"admin:admin - Worker Node",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
