@@ -15,4 +15,5 @@ worker menu - shows status
 admin menu with a connected worker
 
 ![worker-connected.jpg](img/worker-connected.jpg)
+
 worker menu connected to an admin
