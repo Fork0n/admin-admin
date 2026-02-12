@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
+	"time"
 )
 
 const (
@@ -14,10 +16,14 @@ const (
 
 // WorkerServer represents a worker node server
 type WorkerServer struct {
-	listener net.Listener
-	port     int
-	quit     chan bool
-	sysInfo  system.SystemInfo
+	listener          net.Listener
+	port              int
+	quit              chan bool
+	sysInfo           system.SystemInfo
+	activeConn        net.Conn
+	connMu            sync.Mutex
+	onAdminConnect    func(hostname string)
+	onAdminDisconnect func()
 }
 
 // NewWorkerServer creates a new worker server
@@ -29,6 +35,12 @@ func NewWorkerServer(port int) *WorkerServer {
 		port: port,
 		quit: make(chan bool),
 	}
+}
+
+// SetCallbacks sets the callbacks for admin connection events
+func (w *WorkerServer) SetCallbacks(onConnect func(hostname string), onDisconnect func()) {
+	w.onAdminConnect = onConnect
+	w.onAdminDisconnect = onDisconnect
 }
 
 // Start starts the worker server
@@ -77,6 +89,11 @@ func (w *WorkerServer) GetPort() int {
 	return w.port
 }
 
+// GetLocalIP returns the local IP address
+func (w *WorkerServer) GetLocalIP() string {
+	return getLocalIP()
+}
+
 func (w *WorkerServer) acceptConnections() {
 	for {
 		select {
@@ -99,11 +116,28 @@ func (w *WorkerServer) acceptConnections() {
 }
 
 func (w *WorkerServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	w.connMu.Lock()
+	w.activeConn = conn
+	w.connMu.Unlock()
+
+	defer func() {
+		conn.Close()
+		w.connMu.Lock()
+		w.activeConn = nil
+		w.connMu.Unlock()
+		if w.onAdminDisconnect != nil {
+			w.onAdminDisconnect()
+		}
+	}()
+
 	log.Printf("Admin connected from: %s\n", conn.RemoteAddr())
 
 	// Send system info immediately upon connection
 	w.sendSystemInfo(conn)
+
+	// Start sending metrics updates every 2 seconds
+	stopMetrics := make(chan bool)
+	go w.sendMetricsLoop(conn, stopMetrics)
 
 	// Keep connection alive and handle incoming messages
 	decoder := json.NewDecoder(conn)
@@ -111,18 +145,59 @@ func (w *WorkerServer) handleConnection(conn net.Conn) {
 		var msg Message
 		if err := decoder.Decode(&msg); err != nil {
 			log.Printf("Connection closed: %v\n", err)
+			close(stopMetrics)
 			return
 		}
 
 		switch msg.Type {
 		case MsgTypePing:
 			w.sendPong(conn)
+		case MsgTypeAdminInfo:
+			var adminInfo AdminInfoPayload
+			if err := json.Unmarshal(msg.Payload, &adminInfo); err == nil {
+				log.Printf("WORKER: Admin identified as: %s\n", adminInfo.Hostname)
+				if w.onAdminConnect != nil {
+					w.onAdminConnect(adminInfo.Hostname)
+				}
+			}
 		case MsgTypeDisconnect:
 			log.Println("Disconnect requested by admin")
+			close(stopMetrics)
 			return
 		case MsgTypeCommand:
 			// Handle commands (future implementation)
 			log.Println("Received command (not implemented)")
+		}
+	}
+}
+
+func (w *WorkerServer) sendMetricsLoop(conn net.Conn, stop chan bool) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-w.quit:
+			return
+		case <-ticker.C:
+			cpuUsage, ramUsage, gpuUsage := system.GetRealTimeMetrics()
+			payload := MetricsPayload{
+				CPUUsage: cpuUsage,
+				RAMUsage: ramUsage,
+				GPUUsage: gpuUsage,
+			}
+			payloadBytes, _ := json.Marshal(payload)
+			msg := Message{
+				Type:    MsgTypeMetrics,
+				Payload: payloadBytes,
+			}
+			encoder := json.NewEncoder(conn)
+			if err := encoder.Encode(msg); err != nil {
+				log.Printf("WORKER: Failed to send metrics: %v\n", err)
+				return
+			}
 		}
 	}
 }
@@ -136,12 +211,18 @@ func (w *WorkerServer) sendSystemInfo(conn net.Conn) {
 	log.Printf("WORKER: Local IP detected: %s\n", localIP)
 
 	payload := SystemInfoPayload{
-		Hostname:     w.sysInfo.Hostname,
-		OS:           w.sysInfo.OS,
-		Architecture: w.sysInfo.Arch,
-		IPAddress:    localIP,
-		CPUUsage:     w.sysInfo.CPUUsage,
-		RAMUsage:     w.sysInfo.RAMUsage,
+		Hostname:      w.sysInfo.Hostname,
+		OS:            w.sysInfo.OS,
+		Architecture:  w.sysInfo.Arch,
+		IPAddress:     localIP,
+		CPUUsage:      w.sysInfo.CPUUsage,
+		RAMUsage:      w.sysInfo.RAMUsage,
+		RAMTotal:      w.sysInfo.RAMTotal,
+		RAMUsed:       w.sysInfo.RAMUsed,
+		GPUName:       w.sysInfo.GPUName,
+		GPUUsage:      w.sysInfo.GPUUsage,
+		InternetSpeed: w.sysInfo.InternetSpeed,
+		Uptime:        w.sysInfo.Uptime,
 	}
 
 	log.Printf("WORKER: System Info - Hostname: %s, OS: %s, Arch: %s\n",

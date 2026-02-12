@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"time"
 )
 
 // AdminClient represents an admin client that connects to worker nodes
 type AdminClient struct {
-	conn      net.Conn
-	connected bool
-	onUpdate  func(*state.DeviceInfo)
+	conn            net.Conn
+	connected       bool
+	onUpdate        func(*state.DeviceInfo)
+	onMetricsUpdate func(cpuUsage, ramUsage, gpuUsage float64)
 }
 
 // contains is a helper function to check if a string contains a substring
@@ -23,9 +25,10 @@ func contains(s, substr string) bool {
 }
 
 // NewAdminClient creates a new admin client
-func NewAdminClient(onUpdate func(*state.DeviceInfo)) *AdminClient {
+func NewAdminClient(onUpdate func(*state.DeviceInfo), onMetricsUpdate func(cpuUsage, ramUsage, gpuUsage float64)) *AdminClient {
 	return &AdminClient{
-		onUpdate: onUpdate,
+		onUpdate:        onUpdate,
+		onMetricsUpdate: onMetricsUpdate,
 	}
 }
 
@@ -81,12 +84,31 @@ func (a *AdminClient) Connect(address string, port int) error {
 	a.connected = true
 	log.Printf("ADMIN: TCP connection established to %s\n", addr)
 
+	// Send admin info to worker
+	a.sendAdminInfo()
+
 	// Start listening for updates
 	log.Println("ADMIN: Starting receive updates goroutine...")
 	go a.receiveUpdates()
 
 	log.Printf("ADMIN: Successfully connected to worker at %s\n", addr)
 	return nil
+}
+
+// sendAdminInfo sends admin hostname to the worker
+func (a *AdminClient) sendAdminInfo() {
+	hostname, _ := os.Hostname()
+	payload := AdminInfoPayload{
+		Hostname: hostname,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	msg := Message{
+		Type:    MsgTypeAdminInfo,
+		Payload: payloadBytes,
+	}
+	encoder := json.NewEncoder(a.conn)
+	encoder.Encode(msg)
+	log.Printf("ADMIN: Sent admin info (hostname: %s)\n", hostname)
 }
 
 // Disconnect disconnects from the worker node
@@ -156,10 +178,18 @@ func (a *AdminClient) receiveUpdates() {
 				payload.Hostname, payload.OS, payload.IPAddress)
 
 			deviceInfo := &state.DeviceInfo{
-				Hostname:     payload.Hostname,
-				OS:           payload.OS,
-				Architecture: payload.Architecture,
-				IPAddress:    payload.IPAddress,
+				Hostname:      payload.Hostname,
+				OS:            payload.OS,
+				Architecture:  payload.Architecture,
+				IPAddress:     payload.IPAddress,
+				CPUUsage:      payload.CPUUsage,
+				RAMUsage:      payload.RAMUsage,
+				RAMTotal:      payload.RAMTotal,
+				RAMUsed:       payload.RAMUsed,
+				GPUName:       payload.GPUName,
+				GPUUsage:      payload.GPUUsage,
+				InternetSpeed: payload.InternetSpeed,
+				Uptime:        payload.Uptime,
 			}
 
 			if a.onUpdate != nil {
@@ -167,6 +197,17 @@ func (a *AdminClient) receiveUpdates() {
 				a.onUpdate(deviceInfo)
 			} else {
 				log.Println("ADMIN WARNING: No onUpdate callback set")
+			}
+
+		case MsgTypeMetrics:
+			var payload MetricsPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("ADMIN ERROR: Error parsing metrics: %v\n", err)
+				continue
+			}
+
+			if a.onMetricsUpdate != nil {
+				a.onMetricsUpdate(payload.CPUUsage, payload.RAMUsage, payload.GPUUsage)
 			}
 
 		case MsgTypePong:

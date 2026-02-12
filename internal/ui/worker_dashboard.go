@@ -2,73 +2,101 @@ package ui
 
 import (
 	"adminadmin/internal/network"
-	"adminadmin/internal/system"
+	"adminadmin/internal/state"
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 )
 
-func NewWorkerDashboard(onBack func()) fyne.CanvasObject {
+// WorkerWaitingScreen shows the screen when waiting for admin connection
+func NewWorkerWaitingScreen(localIP string, port int, onBack func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
 		"admin:admin - Worker Node",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
 
-	// Server info
-	serverInfoLabel := widget.NewLabel("Server Status")
-	serverInfoLabel.TextStyle = fyne.TextStyle{Bold: true}
+	waitingLabel := widget.NewLabelWithStyle(
+		"Waiting for Admin connection...",
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Italic: true},
+	)
 
-	portLabel := widget.NewLabel(fmt.Sprintf("✓ Listening on port: %d", network.DefaultWorkerPort))
-	portLabel.TextStyle = fyne.TextStyle{Bold: true}
+	// Connection Info
+	ipLabel := widget.NewLabelWithStyle(
+		fmt.Sprintf("Local IP: %s", localIP),
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: true},
+	)
 
-	instructionLabel := widget.NewLabel("Admins can connect to this worker using your IP address")
+	portLabel := widget.NewLabelWithStyle(
+		fmt.Sprintf("Port: %d", port),
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: true},
+	)
 
-	serverInfoSection := container.NewVBox(
-		serverInfoLabel,
+	instructionLabel := widget.NewLabel("Give this IP to the Admin to connect")
+
+	infoSection := container.NewVBox(
+		widget.NewLabelWithStyle("Connection Info", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		ipLabel,
 		portLabel,
 		instructionLabel,
 	)
 
-	// System info
-	systemInfoLabel := widget.NewLabel("System Information")
-	systemInfoLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	sysInfo := system.GetLocalSystemInfo()
-
-	hostnameLabel := widget.NewLabel("Hostname: " + sysInfo.Hostname)
-	osLabel := widget.NewLabel("OS: " + sysInfo.OS)
-	archLabel := widget.NewLabel("Architecture: " + sysInfo.Arch)
-	goVersionLabel := widget.NewLabel("Go Runtime: " + sysInfo.GoVersion)
-	cpuLabel := widget.NewLabel(fmt.Sprintf("CPU Usage: %.2f%%", sysInfo.CPUUsage))
-	ramLabel := widget.NewLabel(fmt.Sprintf("RAM Usage: %.2f%%", sysInfo.RAMUsage))
-
-	systemInfoSection := container.NewVBox(
-		systemInfoLabel,
-		hostnameLabel,
-		osLabel,
-		archLabel,
-		goVersionLabel,
-		cpuLabel,
-		ramLabel,
-	)
-
 	backButton := widget.NewButton("Back to Role Selection", onBack)
-
-	buttonContainer := container.NewVBox(
-		backButton,
-	)
 
 	content := container.NewVBox(
 		title,
 		widget.NewSeparator(),
-		serverInfoSection,
+		waitingLabel,
 		widget.NewSeparator(),
-		systemInfoSection,
+		infoSection,
 		widget.NewSeparator(),
-		buttonContainer,
+		backButton,
 	)
 
-	return container.NewBorder(nil, nil, nil, nil, content)
+	return container.NewCenter(content)
+}
+
+// WorkerConnectedScreen shows the screen when admin is connected
+func NewWorkerConnectedScreen(appState *state.AppState, onBack func()) fyne.CanvasObject {
+	title := widget.NewLabelWithStyle(
+		"admin:admin - Worker Node",
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: true},
+	)
+
+	admin := appState.GetConnectedAdmin()
+	adminName := "Unknown"
+	if admin != nil {
+		adminName = admin.Hostname
+	}
+
+	connectedLabel := widget.NewLabelWithStyle(
+		fmt.Sprintf("Connected to: %s", adminName),
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: true},
+	)
+
+	statusLabel := widget.NewLabel("✓ Admin is monitoring this device")
+
+	backButton := widget.NewButton("Back to Role Selection", onBack)
+
+	content := container.NewVBox(
+		title,
+		widget.NewSeparator(),
+		connectedLabel,
+		statusLabel,
+		widget.NewSeparator(),
+		backButton,
+	)
+
+	return container.NewCenter(content)
+}
+
+// NewWorkerDashboard creates the worker dashboard (legacy, for compatibility)
+func NewWorkerDashboard(onBack func()) fyne.CanvasObject {
+	return NewWorkerWaitingScreen("", network.DefaultWorkerPort, onBack)
 }
