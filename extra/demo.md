@@ -112,8 +112,8 @@ Ensure these ports are open in your firewall.
 
 ## Downloads
 
-- **Windows:** Available on [GitHub Releases](https://github.com/your-repo/releases)
-- **Linux:** Build from source using WSL (see BUILD_WSL.md)
+- **Windows:** Available on [GitHub Releases](https://github.com/Fork0n/admin-admin/releases)
+- **Linux:** Available on [GitHub Releases](https://github.com/Fork0n/admin-admin/releases)
 
 ---
 
