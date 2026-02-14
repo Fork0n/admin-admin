@@ -138,6 +138,13 @@ func (s *AppState) GetSelectedWorkerID() string {
 	return s.selectedWorkerID
 }
 
+// GetConnectedDeviceByID returns a specific worker by ID
+func (s *AppState) GetConnectedDeviceByID(id string) *DeviceInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connectedDevices[id]
+}
+
 // Legacy methods for compatibility
 func (s *AppState) SetConnectedDevice(device *DeviceInfo) {
 	s.AddConnectedDevice(device)

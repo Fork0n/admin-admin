@@ -6,7 +6,6 @@ import (
 	"adminadmin/internal/ui"
 	"fmt"
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"log"
@@ -25,6 +24,9 @@ type App struct {
 
 	// Dashboard controller (persistent for smooth gauge animations)
 	dashboardCtrl *ui.AdminDashboardController
+
+	// SSH terminal window (separate window with tabs)
+	sshTerminalWindow *ui.SSHTerminalWindow
 }
 
 func NewApp(fyneApp fyne.App) *App {
@@ -32,7 +34,7 @@ func NewApp(fyneApp fyne.App) *App {
 		fyneApp:      fyneApp,
 		state:        state.NewAppState(),
 		adminClients: make(map[string]*network.AdminClient),
-		sshPassword:  "admin123", // Default SSH password - should be configurable
+		sshPassword:  network.DefaultSSHPassword, // Default SSH password: admin
 	}
 }
 
@@ -141,7 +143,7 @@ func (a *App) showAdminDashboard() {
 			a.state,
 			func() { a.disconnectAll() },
 			func() { a.backToRoleSelection() },
-			func() { a.showAdminConnectScreen() }, // Add worker
+			func() { a.showAddWorkerDialog() }, // Add worker dialog
 			func(id string) { a.selectWorker(id) },
 			func(ip string) { a.showSSHDialog(ip) },
 		)
@@ -152,6 +154,32 @@ func (a *App) showAdminDashboard() {
 		a.window.SetContent(content)
 	})
 	log.Println("APP: Admin dashboard displayed")
+}
+
+// showAddWorkerDialog shows a dialog to add a new worker without leaving the dashboard
+func (a *App) showAddWorkerDialog() {
+	log.Println("APP: Showing add worker dialog")
+
+	ipEntry := widget.NewEntry()
+	ipEntry.SetPlaceHolder("Enter Worker IP (e.g., 192.168.1.100)")
+
+	formItems := []*widget.FormItem{
+		widget.NewFormItem("Worker IP", ipEntry),
+	}
+
+	dialog.ShowForm(
+		"Add Worker",
+		"Connect",
+		"Cancel",
+		formItems,
+		func(ok bool) {
+			if ok && ipEntry.Text != "" {
+				a.connectToWorker(ipEntry.Text)
+			}
+			// Cancel just closes the dialog, doesn't affect existing connections
+		},
+		a.window,
+	)
 }
 
 // updateDashboardMetrics updates only the gauge values without rebuilding UI
@@ -171,6 +199,13 @@ func (a *App) showWorkerWaitingScreen() {
 		localIP,
 		network.DefaultWorkerPort,
 		func() { a.backToRoleSelection() },
+		func(username, password string) {
+			// Update SSH credentials when user changes them
+			if a.sshServer != nil {
+				a.sshServer.SetCredentials(username, password)
+				log.Printf("APP: SSH credentials updated - username: %s\n", username)
+			}
+		},
 	)
 	a.runOnMain(func() {
 		a.window.SetContent(content)
@@ -186,6 +221,8 @@ func (a *App) showWorkerConnectedScreen() {
 	)
 	a.runOnMain(func() {
 		a.window.SetContent(content)
+		// Make window compact when connected
+		a.window.Resize(fyne.NewSize(350, 120))
 	})
 	log.Println("APP: Worker connected screen displayed")
 }
@@ -216,6 +253,12 @@ func (a *App) backToRoleSelection() {
 	// Cleanup dashboard controller
 	a.dashboardCtrl = nil
 
+	// Cleanup SSH terminal window
+	if a.sshTerminalWindow != nil {
+		a.sshTerminalWindow.Close()
+		a.sshTerminalWindow = nil
+	}
+
 	// Cleanup admin clients
 	a.clientsMu.Lock()
 	for ip, client := range a.adminClients {
@@ -240,6 +283,11 @@ func (a *App) backToRoleSelection() {
 		a.sshServer = nil
 		log.Println("APP: SSH server stopped")
 	}
+
+	// Restore window size
+	a.runOnMain(func() {
+		a.window.Resize(fyne.NewSize(900, 600))
+	})
 
 	a.state.SetRole(state.RoleNone)
 	a.state.ClearConnection()
@@ -306,12 +354,20 @@ func (a *App) connectToWorker(ip string) {
 func (a *App) showSSHDialog(workerIP string) {
 	log.Printf("APP: Showing SSH dialog for %s\n", workerIP)
 
+	// Get hostname for the worker
+	hostname := workerIP
+	device := a.state.GetConnectedDeviceByID(workerIP)
+	if device != nil {
+		hostname = device.Hostname
+	}
+
 	userEntry := widget.NewEntry()
 	userEntry.SetPlaceHolder("Username")
-	userEntry.SetText("admin")
+	userEntry.SetText(network.DefaultSSHUsername) // Default: admin
 
 	passwordEntry := widget.NewPasswordEntry()
 	passwordEntry.SetPlaceHolder("Password")
+	passwordEntry.SetText(network.DefaultSSHPassword) // Default: admin
 
 	formItems := []*widget.FormItem{
 		widget.NewFormItem("Username", userEntry),
@@ -319,20 +375,20 @@ func (a *App) showSSHDialog(workerIP string) {
 	}
 
 	dialog.ShowForm(
-		fmt.Sprintf("SSH to %s", workerIP),
+		fmt.Sprintf("SSH to %s (%s)", hostname, workerIP),
 		"Connect",
 		"Cancel",
 		formItems,
 		func(ok bool) {
 			if ok {
-				a.connectSSH(workerIP, userEntry.Text, passwordEntry.Text)
+				a.connectSSH(workerIP, hostname, userEntry.Text, passwordEntry.Text)
 			}
 		},
 		a.window,
 	)
 }
 
-func (a *App) connectSSH(ip, user, password string) {
+func (a *App) connectSSH(ip, hostname, user, password string) {
 	log.Printf("APP: Connecting SSH to %s as %s\n", ip, user)
 
 	sshClient := network.NewSSHClient()
@@ -342,49 +398,24 @@ func (a *App) connectSSH(ip, user, password string) {
 		return
 	}
 
-	// Show SSH terminal dialog
-	a.showSSHTerminal(sshClient, ip)
-}
+	// Create SSH terminal window if not exists
+	if a.sshTerminalWindow == nil {
+		a.sshTerminalWindow = ui.NewSSHTerminalWindow(a.fyneApp, func() {
+			// Cleanup when window closes
+			a.sshTerminalWindow = nil
+		})
+	}
 
-func (a *App) showSSHTerminal(client *network.SSHClient, ip string) {
-	cmdEntry := widget.NewEntry()
-	cmdEntry.SetPlaceHolder("Enter command...")
-
-	outputLabel := widget.NewLabel("SSH Connected. Enter commands below.")
-	outputLabel.Wrapping = fyne.TextWrapWord
-
-	executeBtn := widget.NewButton("Execute", func() {
-		if cmdEntry.Text != "" {
-			output, err := client.ExecuteCommand(cmdEntry.Text)
-			if err != nil {
-				outputLabel.SetText(fmt.Sprintf("Error: %v\n%s", err, output))
-			} else {
-				outputLabel.SetText(output)
-			}
-			cmdEntry.SetText("")
+	// Add tab for this connection
+	tabID := ip
+	a.sshTerminalWindow.AddTab(tabID, hostname, ip, func(cmd string) string {
+		output, err := sshClient.ExecuteCommand(cmd)
+		if err != nil {
+			return fmt.Sprintf("Error: %v\n%s", err, output)
 		}
+		return output
 	})
 
-	closeBtn := widget.NewButton("Close", func() {
-		client.Close()
-		a.showAdminDashboard()
-	})
-
-	content := container.NewBorder(
-		container.NewVBox(
-			widget.NewLabelWithStyle(fmt.Sprintf("SSH Terminal - %s", ip), fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-			widget.NewSeparator(),
-		),
-		container.NewVBox(
-			widget.NewSeparator(),
-			container.NewBorder(nil, nil, nil, executeBtn, cmdEntry),
-			closeBtn,
-		),
-		nil, nil,
-		container.NewVScroll(outputLabel),
-	)
-
-	a.runOnMain(func() {
-		a.window.SetContent(content)
-	})
+	// Show the window
+	a.sshTerminalWindow.Show()
 }

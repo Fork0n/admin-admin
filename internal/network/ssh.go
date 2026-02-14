@@ -13,23 +13,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
 )
 
 const (
-	DefaultSSHPort = 2222 // Use non-standard port to avoid conflicts
+	DefaultSSHPort     = 2222 // Use non-standard port to avoid conflicts
+	DefaultSSHUsername = "admin"
+	DefaultSSHPassword = "admin"
 )
+
+// SSHCredentials holds SSH login credentials
+type SSHCredentials struct {
+	Username string
+	Password string
+}
 
 // SSHServer provides SSH access to the worker
 type SSHServer struct {
-	listener net.Listener
-	port     int
-	quit     chan bool
-	config   *ssh.ServerConfig
-	mu       sync.Mutex
-	running  bool
+	listener    net.Listener
+	port        int
+	quit        chan bool
+	config      *ssh.ServerConfig
+	mu          sync.Mutex
+	running     bool
+	credentials SSHCredentials
 }
 
 // NewSSHServer creates a new SSH server
@@ -40,7 +50,30 @@ func NewSSHServer(port int) *SSHServer {
 	return &SSHServer{
 		port: port,
 		quit: make(chan bool),
+		credentials: SSHCredentials{
+			Username: DefaultSSHUsername,
+			Password: DefaultSSHPassword,
+		},
 	}
+}
+
+// SetCredentials sets custom SSH credentials
+func (s *SSHServer) SetCredentials(username, password string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if username != "" {
+		s.credentials.Username = username
+	}
+	if password != "" {
+		s.credentials.Password = password
+	}
+}
+
+// GetCredentials returns the current SSH credentials
+func (s *SSHServer) GetCredentials() SSHCredentials {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credentials
 }
 
 // Start starts the SSH server
@@ -52,16 +85,24 @@ func (s *SSHServer) Start(password string) error {
 		return fmt.Errorf("SSH server already running")
 	}
 
+	// Use provided password or default
+	if password != "" {
+		s.credentials.Password = password
+	}
+
 	// Generate or load host key
 	hostKey, err := getOrCreateHostKey()
 	if err != nil {
 		return fmt.Errorf("failed to get host key: %w", err)
 	}
 
-	// Configure SSH server
+	// Configure SSH server with credentials check
+	expectedUser := s.credentials.Username
+	expectedPass := s.credentials.Password
 	s.config = &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if string(pass) == password {
+			// Check username and password
+			if c.User() == expectedUser && string(pass) == expectedPass {
 				log.Printf("SSH: User %s authenticated successfully\n", c.User())
 				return nil, nil
 			}
@@ -224,10 +265,66 @@ func (s *SSHServer) startShell(channel ssh.Channel) {
 func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 	var cmd *exec.Cmd
 
+	// For commands that might need auto-accept, modify them
+	modifiedCmd := cmdStr
+
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd.exe", "/c", cmdStr)
+		// Auto-accept for winget - add all necessary flags to avoid prompts
+		lowerCmd := strings.ToLower(cmdStr)
+		if strings.Contains(lowerCmd, "winget") {
+			if strings.Contains(lowerCmd, "install") || strings.Contains(lowerCmd, "upgrade") {
+				if !strings.Contains(lowerCmd, "--accept-source-agreements") {
+					modifiedCmd += " --accept-source-agreements"
+				}
+				if !strings.Contains(lowerCmd, "--accept-package-agreements") {
+					modifiedCmd += " --accept-package-agreements"
+				}
+				// Disable interactive mode
+				if !strings.Contains(lowerCmd, "--disable-interactivity") {
+					modifiedCmd += " --disable-interactivity"
+				}
+			}
+		}
+		// For choco
+		if strings.Contains(lowerCmd, "choco") && strings.Contains(lowerCmd, "install") {
+			if !strings.Contains(lowerCmd, "-y") {
+				modifiedCmd += " -y"
+			}
+		}
+		cmd = exec.Command("cmd.exe", "/c", modifiedCmd)
 	} else {
-		cmd = exec.Command("/bin/sh", "-c", cmdStr)
+		// For apt-get, add -y flag
+		if strings.Contains(cmdStr, "apt-get install") && !strings.Contains(cmdStr, "-y") {
+			modifiedCmd = strings.Replace(cmdStr, "apt-get install", "apt-get install -y", 1)
+		}
+		// For apt install
+		if strings.Contains(cmdStr, "apt install") && !strings.Contains(cmdStr, "-y") {
+			modifiedCmd = strings.Replace(cmdStr, "apt install", "apt install -y", 1)
+		}
+		// For yum/dnf
+		if (strings.Contains(cmdStr, "yum install") || strings.Contains(cmdStr, "dnf install")) && !strings.Contains(cmdStr, "-y") {
+			modifiedCmd = strings.Replace(strings.Replace(modifiedCmd, "yum install", "yum install -y", 1), "dnf install", "dnf install -y", 1)
+		}
+		cmd = exec.Command("/bin/sh", "-c", modifiedCmd)
+	}
+
+	// Use NUL or /dev/null for stdin to prevent "reading input" errors
+	if runtime.GOOS == "windows" {
+		devNull, err := os.Open("NUL")
+		if err == nil {
+			cmd.Stdin = devNull
+			defer devNull.Close()
+		} else {
+			cmd.Stdin = strings.NewReader("")
+		}
+	} else {
+		devNull, err := os.Open("/dev/null")
+		if err == nil {
+			cmd.Stdin = devNull
+			defer devNull.Close()
+		} else {
+			cmd.Stdin = strings.NewReader("")
+		}
 	}
 
 	cmd.Stdout = channel
@@ -337,12 +434,107 @@ func (c *SSHClient) ExecuteCommand(cmd string) (string, error) {
 	}
 	defer session.Close()
 
+	// Request a pseudo-terminal for better command compatibility
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          0,     // Disable echo
+		ssh.TTY_OP_ISPEED: 14400, // Input speed
+		ssh.TTY_OP_OSPEED: 14400, // Output speed
+	}
+
+	// Request PTY - this helps with some interactive commands
+	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
+		// PTY failed, try without it
+		log.Printf("SSH Client: PTY request failed, continuing without: %v", err)
+	}
+
+	// For commands that might prompt for input, we need to handle them differently
+	// Run with CombinedOutput for simple commands
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
 		return string(output), fmt.Errorf("command failed: %w", err)
 	}
 
 	return string(output), nil
+}
+
+// ExecuteCommandWithInput executes a command and sends input to it
+func (c *SSHClient) ExecuteCommandWithInput(cmd string, input string) (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("not connected")
+	}
+
+	session, err := c.client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	// Set up stdin pipe
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stdin: %w", err)
+	}
+
+	// Request a pseudo-terminal
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          0,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
+		log.Printf("SSH Client: PTY request failed: %v", err)
+	}
+
+	// Get output
+	output, err := session.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stdout: %w", err)
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stderr: %w", err)
+	}
+
+	// Start the command
+	if err := session.Start(cmd); err != nil {
+		return "", fmt.Errorf("failed to start command: %w", err)
+	}
+
+	// Send input if provided
+	if input != "" {
+		_, err = stdin.Write([]byte(input + "\n"))
+		if err != nil {
+			log.Printf("SSH Client: Failed to write input: %v", err)
+		}
+	}
+	stdin.Close()
+
+	// Read all output
+	var result []byte
+	buf := make([]byte, 4096)
+	for {
+		n, err := output.Read(buf)
+		if n > 0 {
+			result = append(result, buf[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	// Also read stderr
+	for {
+		n, err := stderr.Read(buf)
+		if n > 0 {
+			result = append(result, buf[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	session.Wait()
+	return string(result), nil
 }
 
 // Close closes the SSH connection

@@ -10,7 +10,8 @@ import (
 )
 
 // WorkerWaitingScreen shows the screen when waiting for admin connection
-func NewWorkerWaitingScreen(localIP string, port int, onBack func()) fyne.CanvasObject {
+// onCredentialsChange is called when SSH credentials are updated
+func NewWorkerWaitingScreen(localIP string, port int, onBack func(), onCredentialsChange func(username, password string)) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
 		"admin:admin - Worker Node",
 		fyne.TextAlignCenter,
@@ -45,6 +46,38 @@ func NewWorkerWaitingScreen(localIP string, port int, onBack func()) fyne.Canvas
 		instructionLabel,
 	)
 
+	// SSH Credentials Section
+	sshHeader := widget.NewLabelWithStyle("SSH Credentials", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	usernameEntry := widget.NewEntry()
+	usernameEntry.SetPlaceHolder("Username")
+	usernameEntry.SetText(network.DefaultSSHUsername)
+
+	passwordEntry := widget.NewPasswordEntry()
+	passwordEntry.SetPlaceHolder("Password")
+	passwordEntry.SetText(network.DefaultSSHPassword)
+
+	// Update credentials when changed
+	updateCredentials := func() {
+		if onCredentialsChange != nil {
+			onCredentialsChange(usernameEntry.Text, passwordEntry.Text)
+		}
+	}
+
+	usernameEntry.OnChanged = func(s string) { updateCredentials() }
+	passwordEntry.OnChanged = func(s string) { updateCredentials() }
+
+	sshPortLabel := widget.NewLabel(fmt.Sprintf("SSH Port: %d", network.DefaultSSHPort))
+
+	sshSection := container.NewVBox(
+		sshHeader,
+		widget.NewLabel("Username:"),
+		usernameEntry,
+		widget.NewLabel("Password:"),
+		passwordEntry,
+		sshPortLabel,
+	)
+
 	backButton := widget.NewButton("Back to Role Selection", onBack)
 
 	content := container.NewVBox(
@@ -54,6 +87,8 @@ func NewWorkerWaitingScreen(localIP string, port int, onBack func()) fyne.Canvas
 		widget.NewSeparator(),
 		infoSection,
 		widget.NewSeparator(),
+		sshSection,
+		widget.NewSeparator(),
 		backButton,
 	)
 
@@ -61,18 +96,16 @@ func NewWorkerWaitingScreen(localIP string, port int, onBack func()) fyne.Canvas
 }
 
 // WorkerConnectedScreen shows the screen when admin is connected
+// Returns the content and a flag indicating this should use a compact window
 func NewWorkerConnectedScreen(appState *state.AppState, onBack func()) fyne.CanvasObject {
-	title := widget.NewLabelWithStyle(
-		"admin:admin - Worker Node",
-		fyne.TextAlignCenter,
-		fyne.TextStyle{Bold: true},
-	)
-
 	admin := appState.GetConnectedAdmin()
 	adminName := "Unknown"
 	if admin != nil {
 		adminName = admin.Hostname
 	}
+
+	// Compact status display
+	statusIcon := widget.NewLabelWithStyle("✓", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	connectedLabel := widget.NewLabelWithStyle(
 		fmt.Sprintf("Connected to: %s", adminName),
@@ -80,23 +113,27 @@ func NewWorkerConnectedScreen(appState *state.AppState, onBack func()) fyne.Canv
 		fyne.TextStyle{Bold: true},
 	)
 
-	statusLabel := widget.NewLabel("✓ Admin is monitoring this device")
+	sshLabel := widget.NewLabel(fmt.Sprintf("SSH available on port %d", network.DefaultSSHPort))
+	sshLabel.Alignment = fyne.TextAlignCenter
 
-	backButton := widget.NewButton("Back to Role Selection", onBack)
+	backButton := widget.NewButton("Disconnect", onBack)
+	backButton.Importance = widget.DangerImportance
 
 	content := container.NewVBox(
-		title,
-		widget.NewSeparator(),
-		connectedLabel,
-		statusLabel,
-		widget.NewSeparator(),
+		container.NewHBox(statusIcon, connectedLabel),
+		sshLabel,
 		backButton,
 	)
 
-	return container.NewCenter(content)
+	return container.NewPadded(content)
+}
+
+// WorkerConnectedScreenCompact returns true to indicate compact mode is preferred
+func WorkerConnectedScreenCompact() bool {
+	return true
 }
 
 // NewWorkerDashboard creates the worker dashboard (legacy, for compatibility)
 func NewWorkerDashboard(onBack func()) fyne.CanvasObject {
-	return NewWorkerWaitingScreen("", network.DefaultWorkerPort, onBack)
+	return NewWorkerWaitingScreen("", network.DefaultWorkerPort, onBack, nil)
 }

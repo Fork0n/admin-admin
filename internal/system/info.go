@@ -131,10 +131,22 @@ func getLocalIP() string {
 	}
 
 	var fallbackIP string
+	var candidateIPs []string
 
 	for _, iface := range interfaces {
 		// Skip down, loopback, and virtual interfaces
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		// Skip common virtual adapter names
+		nameLower := strings.ToLower(iface.Name)
+		if strings.Contains(nameLower, "virtual") ||
+			strings.Contains(nameLower, "vmware") ||
+			strings.Contains(nameLower, "vbox") ||
+			strings.Contains(nameLower, "docker") ||
+			strings.Contains(nameLower, "vethernet") ||
+			strings.Contains(nameLower, "hyper-v") {
 			continue
 		}
 
@@ -161,13 +173,14 @@ func getLocalIP() string {
 
 			// Prefer private network addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
 			if ip[0] == 192 && ip[1] == 168 {
+				// Highest priority - return immediately
 				return ip.String()
 			}
 			if ip[0] == 10 {
-				return ip.String()
+				candidateIPs = append(candidateIPs, ip.String())
 			}
 			if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
-				return ip.String()
+				candidateIPs = append(candidateIPs, ip.String())
 			}
 
 			// Store as fallback if no private address found
@@ -175,6 +188,11 @@ func getLocalIP() string {
 				fallbackIP = ip.String()
 			}
 		}
+	}
+
+	// Return first candidate IP if we found any 10.x.x.x or 172.x.x.x addresses
+	if len(candidateIPs) > 0 {
+		return candidateIPs[0]
 	}
 
 	if fallbackIP != "" {

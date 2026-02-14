@@ -103,20 +103,37 @@ admin:admin includes built-in SSH functionality for remote command execution.
 
 When you select "Worker PC", an SSH server automatically starts:
 - **Port**: 2222
-- **Default Password**: `admin123`
-- **Username**: Any (e.g., "admin")
+- **Default Username**: `admin`
+- **Default Password**: `admin`
+
+You can customize credentials on the Worker's waiting screen before connecting.
 
 The SSH host key is generated on first run and stored in:
 - Windows: `%APPDATA%\adminadmin\ssh_host_key`
+
+### Custom SSH Credentials
+
+On the Worker PC, before an admin connects:
+1. The waiting screen displays editable Username and Password fields
+2. Modify these to set custom credentials
+3. The SSH server will use these credentials for authentication
 
 ### Connecting via SSH from Admin Dashboard
 
 1. Connect to a worker from the Admin dashboard
 2. Click "Open SSH Terminal" button
 3. Enter credentials:
-   - **Username**: `admin` (or any username)
-   - **Password**: `admin123`
+   - **Username**: `admin` (default)
+   - **Password**: `admin` (default)
 4. Execute commands in the terminal interface
+
+### SSH Terminal Features
+
+- **Multi-tab support**: Open multiple SSH sessions in tabs
+- **Command history**: Navigate previous commands
+- **Copy support**: Select and copy terminal output
+- **Built-in commands**: `clear`, `exit`, `help`
+- **Auto-flags**: Package managers (winget, apt, choco) automatically get non-interactive flags
 
 ### Connecting via External SSH Client
 
@@ -130,14 +147,14 @@ ssh admin@192.168.0.67 -p 2222
 # Host: 192.168.0.67
 # Port: 2222
 # Username: admin
-# Password: admin123
+# Password: admin
 ```
 
 ### SSH Security Notes
 
 ⚠️ **Important Security Considerations:**
 
-1. The default password `admin123` should be changed in production
+1. Change the default credentials in production
 2. SSH host keys are auto-generated and stored locally
 3. The SSH server only runs when in Worker mode
 4. Consider firewall rules to restrict SSH access
