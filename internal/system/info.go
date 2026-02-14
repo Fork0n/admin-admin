@@ -7,21 +7,12 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 )
-
-// getHiddenWindowAttr returns syscall attributes to hide command windows on Windows
-func getHiddenWindowAttr() *syscall.SysProcAttr {
-	if runtime.GOOS == "windows" {
-		return &syscall.SysProcAttr{HideWindow: true}
-	}
-	return nil
-}
 
 type SystemInfo struct {
 	Hostname      string

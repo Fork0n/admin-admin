@@ -1,96 +1,91 @@
 #!/bin/bash
-# Build script for admin:admin
-# Usage: ./build.sh [-v "version-name"]
-# Example: ./build.sh -v "alpha-2.2"
+# admin:admin Build Script
+# Usage: ./build.sh [-s] [-v version] [-o w|l|m]
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-GRAY='\033[0;37m'
-NC='\033[0m' # No Color
+silent=false
+version=""
+os=""
 
-echo ""
-echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}       admin:admin Build Script        ${NC}"
-echo -e "${CYAN}========================================${NC}"
-echo ""
-
-# Parse command line arguments
-VERSION=""
-while getopts "v:" opt; do
+# Parse arguments
+while getopts "sv:o:" opt; do
     case $opt in
-        v)
-            VERSION="$OPTARG"
-            ;;
-        \?)
-            echo "Invalid option: -$OPTARG" >&2
-            exit 1
-            ;;
+        s) silent=true ;;
+        v) version="$OPTARG" ;;
+        o) os="$OPTARG" ;;
     esac
 done
 
-# If no version provided via parameter, prompt the user
-if [ -z "$VERSION" ]; then
-    echo -e "${YELLOW}Enter build version (e.g., alpha-2.2, beta-1.0, release-1.0):${NC}"
-    read -p "Version: " VERSION
+log() {
+    if [ "$silent" = false ]; then echo "$1"; fi
+}
 
-    # If still empty, use default
-    if [ -z "$VERSION" ]; then
-        VERSION="dev"
-        echo -e "${GRAY}Using default version: $VERSION${NC}"
-    fi
+# Detect current OS
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)  echo "l" ;;
+        Darwin*) echo "m" ;;
+        MINGW*|CYGWIN*|MSYS*) echo "w" ;;
+        *) echo "l" ;;
+    esac
+}
+currentOS=$(detect_os)
+
+# If no OS specified, ask
+if [ -z "$os" ]; then
+    echo "Select target OS:"
+    echo "  [w] Windows"
+    echo "  [l] Linux"
+    echo "  [m] macOS"
+    echo "(Note: Cross-compilation requires native OS or Docker)"
+    read -p "OS (w/l/m): " os
 fi
 
-# Sanitize version string (replace spaces and special chars with dashes)
-VERSION=$(echo "$VERSION" | sed 's/[^a-zA-Z0-9\.\-]/-/g')
+# Validate OS
+case "$os" in
+    w|W) export GOOS=windows; ext=".exe"; targetOS="w" ;;
+    l|L) export GOOS=linux; ext=""; targetOS="l" ;;
+    m|M) export GOOS=darwin; ext=""; targetOS="m" ;;
+    *)
+        echo "Invalid OS. Build aborted."
+        exit 1
+        ;;
+esac
 
-# Detect OS for output extension
-if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-    OUTPUT_NAME="admin-admin-build-$VERSION.exe"
-else
-    OUTPUT_NAME="admin-admin-build-$VERSION"
+# Warn about cross-compilation
+if [ "$targetOS" != "$currentOS" ]; then
+    echo "Warning: Cross-compiling Fyne apps requires native build environment."
+    echo "CGO is required for Fyne. Build may fail."
 fi
 
-OUTPUT_PATH="bin/$OUTPUT_NAME"
+# If no version, ask
+if [ -z "$version" ]; then
+    read -p "Version (leave empty for none): " version
+fi
 
-echo -e "${GREEN}Building version: $VERSION${NC}"
-echo -e "${GREEN}Output file: $OUTPUT_PATH${NC}"
-echo ""
+# Build filename
+filename="admin-admin"
+[ -n "$version" ] && filename="$filename-$version"
+filename="$filename$ext"
+output="bin/$filename"
 
-# Enable CGO
+# Setup environment
 export CGO_ENABLED=1
+export GOARCH=amd64
 
-# Create bin directory if it doesn't exist
-if [ ! -d "bin" ]; then
-    mkdir -p bin
-    echo -e "${GRAY}Created bin directory${NC}"
-fi
+# Create bin directory
+mkdir -p bin
 
-# Build the application
-echo -e "${CYAN}Compiling...${NC}"
+log "Building $filename..."
 
-go build -ldflags="-s -w -X main.Version=$VERSION" -o "$OUTPUT_PATH" ./cmd/app
-
-if [ $? -eq 0 ]; then
-    echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}       Build Successful!               ${NC}"
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}Output: $OUTPUT_PATH${NC}"
-
-    # Show file size
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        SIZE=$(ls -lh "$OUTPUT_PATH" | awk '{print $5}')
-    else
-        SIZE=$(ls -lh "$OUTPUT_PATH" | awk '{print $5}')
+# Build
+if go build -ldflags="-s -w" -o "$output" ./cmd/app 2>&1; then
+    log "Build successful: $output"
+    if [ "$silent" = false ]; then
+        size=$(du -h "$output" | cut -f1)
+        echo "Size: $size"
     fi
-    echo -e "${GREEN}Size: $SIZE${NC}"
 else
-    echo ""
-    echo -e "${RED}========================================${NC}"
-    echo -e "${RED}       Build Failed!                   ${NC}"
-    echo -e "${RED}========================================${NC}"
+    echo "Build failed!"
+    [ "$targetOS" != "$currentOS" ] && echo "Cross-compilation failed. Build on target OS instead."
     exit 1
 fi

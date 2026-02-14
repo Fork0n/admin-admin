@@ -7,13 +7,16 @@ import (
 	"os"
 )
 
+// Version is set at build time via -ldflags
+var Version = "dev"
+
 func main() {
 	// Configure logging
 	log.SetOutput(os.Stdout)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
 	log.Println("=====================================")
-	log.Println("        admin:admin Starting")
+	log.Printf("        admin:admin v%s", Version)
 	log.Println("=====================================")
 
 	fyneApp := app.New()
