@@ -7,6 +7,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"sync"
 )
 
 // AdminConnectScreen shows the connection screen before connecting
@@ -23,7 +24,7 @@ func NewAdminConnectScreen(onConnect func(string), onBack func()) fyne.CanvasObj
 		fyne.TextStyle{},
 	)
 
-	// IP input
+	// IP input - wider entry
 	ipEntry := widget.NewEntry()
 	ipEntry.SetPlaceHolder("Enter Worker IP (e.g., 192.168.1.100)")
 
@@ -36,12 +37,13 @@ func NewAdminConnectScreen(onConnect func(string), onBack func()) fyne.CanvasObj
 
 	backButton := widget.NewButton("Back", onBack)
 
+	// Fixed layout: title, subtitle, separator, label, ip input, connect, separator, back
 	content := container.NewVBox(
 		title,
 		subtitle,
 		widget.NewSeparator(),
 		widget.NewLabel("Worker IP Address:"),
-		ipEntry,
+		container.NewGridWrap(fyne.NewSize(300, 40), ipEntry),
 		connectButton,
 		widget.NewSeparator(),
 		backButton,
@@ -50,31 +52,157 @@ func NewAdminConnectScreen(onConnect func(string), onBack func()) fyne.CanvasObj
 	return container.NewCenter(content)
 }
 
-// AdminDashboard shows the connected dashboard with device info and gauges
-func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack func(), onAddWorker func(), onSelectWorker func(string), onSSH func(string)) fyne.CanvasObject {
-	workers := appState.GetConnectedDevicesList()
+// AdminDashboardController manages the admin dashboard with persistent gauges
+type AdminDashboardController struct {
+	mu sync.RWMutex
+
+	// Callbacks
+	onDisconnect   func()
+	onBack         func()
+	onAddWorker    func()
+	onSelectWorker func(string)
+	onSSH          func(string)
+
+	// State
+	appState *state.AppState
+
+	// Cached UI elements (reused across updates)
+	cpuGauge *Gauge
+	ramGauge *Gauge
+	gpuGauge *Gauge
+
+	// Labels that need updating
+	ramDetailsLabel *widget.Label
+	uptimeLabel     *widget.Label
+
+	// Current worker ID being displayed
+	currentWorkerID string
+
+	// Root container
+	rootContainer fyne.CanvasObject
+}
+
+// NewAdminDashboardController creates a new dashboard controller
+func NewAdminDashboardController(
+	appState *state.AppState,
+	onDisconnect func(),
+	onBack func(),
+	onAddWorker func(),
+	onSelectWorker func(string),
+	onSSH func(string),
+) *AdminDashboardController {
+	ctrl := &AdminDashboardController{
+		appState:       appState,
+		onDisconnect:   onDisconnect,
+		onBack:         onBack,
+		onAddWorker:    onAddWorker,
+		onSelectWorker: onSelectWorker,
+		onSSH:          onSSH,
+	}
+
+	// Create persistent gauges
+	ctrl.cpuGauge = NewGauge("CPU")
+	ctrl.ramGauge = NewGauge("RAM")
+	ctrl.gpuGauge = NewGauge("GPU")
+
+	// Create persistent labels
+	ctrl.ramDetailsLabel = widget.NewLabel("")
+	ctrl.uptimeLabel = widget.NewLabel("")
+
+	return ctrl
+}
+
+// runOnMain safely runs a function on the main UI thread
+func (ctrl *AdminDashboardController) runOnMain(fn func()) {
+	if drv := fyne.CurrentApp().Driver(); drv != nil {
+		drv.DoFromGoroutine(fn, false)
+	} else {
+		fn()
+	}
+}
+
+// GetContent returns the dashboard UI, creating or updating as needed
+func (ctrl *AdminDashboardController) GetContent() fyne.CanvasObject {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+
+	workers := ctrl.appState.GetConnectedDevicesList()
 
 	if len(workers) == 0 {
 		return container.NewCenter(widget.NewLabel("No workers connected"))
 	}
 
+	selectedID := ctrl.appState.GetSelectedWorkerID()
+	device := ctrl.appState.GetSelectedWorker()
+
+	// Update gauge values (they will animate smoothly from current to new)
+	if device != nil {
+		ctrl.cpuGauge.SetValue(device.CPUUsage)
+		ctrl.ramGauge.SetValue(device.RAMUsage)
+		ctrl.gpuGauge.SetValue(device.GPUUsage)
+
+		ctrl.ramDetailsLabel.SetText(fmt.Sprintf("RAM: %s / %s",
+			system.FormatBytes(device.RAMUsed),
+			system.FormatBytes(device.RAMTotal)))
+		ctrl.uptimeLabel.SetText(fmt.Sprintf("Uptime: %s", system.FormatUptime(device.Uptime)))
+	}
+
+	// Only rebuild UI if worker selection changed or first time
+	if ctrl.rootContainer == nil || ctrl.currentWorkerID != selectedID {
+		ctrl.currentWorkerID = selectedID
+		ctrl.rootContainer = ctrl.buildFullUI(workers, device, selectedID)
+	}
+
+	return ctrl.rootContainer
+}
+
+// UpdateMetricsOnly updates only the gauge values without rebuilding UI
+func (ctrl *AdminDashboardController) UpdateMetricsOnly() {
+	ctrl.mu.RLock()
+	device := ctrl.appState.GetSelectedWorker()
+	ctrl.mu.RUnlock()
+
+	if device != nil {
+		// Update gauges - SetValue is thread-safe (has its own locking)
+		ctrl.cpuGauge.SetValue(device.CPUUsage)
+		ctrl.ramGauge.SetValue(device.RAMUsage)
+		ctrl.gpuGauge.SetValue(device.GPUUsage)
+
+		// Update labels on main thread
+		ramText := fmt.Sprintf("RAM: %s / %s",
+			system.FormatBytes(device.RAMUsed),
+			system.FormatBytes(device.RAMTotal))
+		ctrl.runOnMain(func() {
+			ctrl.ramDetailsLabel.SetText(ramText)
+		})
+	}
+}
+
+// ForceRebuild forces a complete UI rebuild (for worker list changes)
+func (ctrl *AdminDashboardController) ForceRebuild() {
+	ctrl.mu.Lock()
+	ctrl.rootContainer = nil
+	ctrl.currentWorkerID = ""
+	ctrl.mu.Unlock()
+}
+
+// buildFullUI creates the complete dashboard UI
+func (ctrl *AdminDashboardController) buildFullUI(workers []*state.DeviceInfo, device *state.DeviceInfo, selectedID string) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle(
 		"admin:admin - Admin Panel",
 		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
 	)
 
-	// Worker count
 	workerCountLabel := widget.NewLabel(fmt.Sprintf("Connected Workers: %d", len(workers)))
 
 	// Worker list (left side)
 	workerList := container.NewVBox()
-	selectedID := appState.GetSelectedWorkerID()
 
 	for _, worker := range workers {
-		w := worker // Capture for closure
+		w := worker
 		workerBtn := widget.NewButton(fmt.Sprintf("%s (%s)", w.Hostname, w.IPAddress), func() {
-			onSelectWorker(w.ID)
+			ctrl.onSelectWorker(w.ID)
 		})
 		if w.ID == selectedID {
 			workerBtn.Importance = widget.HighImportance
@@ -82,8 +210,7 @@ func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack fun
 		workerList.Add(workerBtn)
 	}
 
-	// Add worker button
-	addWorkerBtn := widget.NewButton("+ Add Worker", onAddWorker)
+	addWorkerBtn := widget.NewButton("+ Add Worker", ctrl.onAddWorker)
 	workerList.Add(widget.NewSeparator())
 	workerList.Add(addWorkerBtn)
 
@@ -94,11 +221,10 @@ func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack fun
 	)
 
 	// Selected worker details (right side)
-	device := appState.GetSelectedWorker()
 	var detailsContent fyne.CanvasObject
 
 	if device != nil {
-		detailsContent = createWorkerDetailsView(device, onSSH)
+		detailsContent = ctrl.buildWorkerDetailsView(device)
 	} else {
 		detailsContent = widget.NewLabel("Select a worker from the list")
 	}
@@ -111,9 +237,9 @@ func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack fun
 	split.SetOffset(0.25)
 
 	// Bottom buttons
-	disconnectButton := widget.NewButton("Disconnect All", onDisconnect)
+	disconnectButton := widget.NewButton("Disconnect All", ctrl.onDisconnect)
 	disconnectButton.Importance = widget.DangerImportance
-	backButton := widget.NewButton("Back to Role Selection", onBack)
+	backButton := widget.NewButton("Back to Role Selection", ctrl.onBack)
 	buttonSection := container.NewHBox(disconnectButton, backButton)
 
 	content := container.NewBorder(
@@ -126,9 +252,8 @@ func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack fun
 	return content
 }
 
-// createWorkerDetailsView creates the detailed view for a selected worker
-func createWorkerDetailsView(device *state.DeviceInfo, onSSH func(string)) fyne.CanvasObject {
-	// Device Info Header
+// buildWorkerDetailsView creates the detailed view using the persistent gauges
+func (ctrl *AdminDashboardController) buildWorkerDetailsView(device *state.DeviceInfo) fyne.CanvasObject {
 	deviceHeader := widget.NewLabelWithStyle(
 		device.Hostname,
 		fyne.TextAlignCenter,
@@ -137,37 +262,26 @@ func createWorkerDetailsView(device *state.DeviceInfo, onSSH func(string)) fyne.
 
 	osLabel := widget.NewLabel(fmt.Sprintf("OS: %s (%s)", device.OS, device.Architecture))
 	ipLabel := widget.NewLabel(fmt.Sprintf("IP: %s", device.IPAddress))
-	uptimeLabel := widget.NewLabel(fmt.Sprintf("Uptime: %s", system.FormatUptime(device.Uptime)))
 
 	infoSection := container.NewVBox(
 		deviceHeader,
 		osLabel,
 		ipLabel,
-		uptimeLabel,
+		ctrl.uptimeLabel,
 	)
 
-	// Gauges Section - Speedometer style
-	cpuGauge := CreateSpeedometerGauge("CPU", device.CPUUsage, "%")
-	ramGauge := CreateSpeedometerGauge("RAM", device.RAMUsage, "%")
-	gpuGauge := CreateSpeedometerGauge("GPU", device.GPUUsage, "%")
-
+	// Use the persistent gauges
 	gaugesRow := container.NewGridWithColumns(3,
-		cpuGauge,
-		ramGauge,
-		gpuGauge,
+		ctrl.cpuGauge,
+		ctrl.ramGauge,
+		ctrl.gpuGauge,
 	)
 
-	// RAM Details
-	ramDetails := widget.NewLabel(fmt.Sprintf("RAM: %s / %s",
-		system.FormatBytes(device.RAMUsed),
-		system.FormatBytes(device.RAMTotal)))
-
-	// GPU Info
 	gpuLabel := widget.NewLabel(fmt.Sprintf("GPU: %s", device.GPUName))
 
 	// SSH Button
 	sshButton := widget.NewButton("Open SSH Terminal", func() {
-		onSSH(device.IPAddress)
+		ctrl.onSSH(device.IPAddress)
 	})
 	sshButton.Importance = widget.MediumImportance
 
@@ -176,11 +290,19 @@ func createWorkerDetailsView(device *state.DeviceInfo, onSSH func(string)) fyne.
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Resource Usage", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		gaugesRow,
-		ramDetails,
+		ctrl.ramDetailsLabel,
 		gpuLabel,
 		widget.NewSeparator(),
 		sshButton,
 	)
+}
+
+// Legacy function for compatibility - creates a new controller each time (old behavior)
+func NewAdminDashboard(appState *state.AppState, onDisconnect func(), onBack func(), onAddWorker func(), onSelectWorker func(string), onSSH func(string)) fyne.CanvasObject {
+	// For backwards compatibility, but this won't have smooth gauge animations
+	// Use AdminDashboardController for proper behavior
+	ctrl := NewAdminDashboardController(appState, onDisconnect, onBack, onAddWorker, onSelectWorker, onSSH)
+	return ctrl.GetContent()
 }
 
 // NewSSHDialog creates an SSH connection dialog

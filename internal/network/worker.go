@@ -172,7 +172,7 @@ func (w *WorkerServer) handleConnection(conn net.Conn) {
 }
 
 func (w *WorkerServer) sendMetricsLoop(conn net.Conn, stop chan bool) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second) // 1 Hz polling rate
 	defer ticker.Stop()
 
 	for {

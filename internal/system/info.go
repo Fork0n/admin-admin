@@ -7,12 +7,21 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 )
+
+// getHiddenWindowAttr returns syscall attributes to hide command windows on Windows
+func getHiddenWindowAttr() *syscall.SysProcAttr {
+	if runtime.GOOS == "windows" {
+		return &syscall.SysProcAttr{HideWindow: true}
+	}
+	return nil
+}
 
 type SystemInfo struct {
 	Hostname      string
@@ -82,8 +91,8 @@ func GetLocalSystemInfo() SystemInfo {
 
 // GetRealTimeMetrics gets only the dynamic metrics (CPU, RAM, GPU usage)
 func GetRealTimeMetrics() (cpuUsage, ramUsage, gpuUsage float64) {
-	// Get CPU usage (average over 500ms for faster updates)
-	cpuPercent, err := cpu.Percent(500*time.Millisecond, false)
+	// Get CPU usage (average over 200ms for faster updates)
+	cpuPercent, err := cpu.Percent(200*time.Millisecond, false)
 	if err == nil && len(cpuPercent) > 0 {
 		cpuUsage = cpuPercent[0]
 	}
@@ -182,6 +191,7 @@ func getGPUInfo() (name string, usage float64) {
 	if runtime.GOOS == "windows" {
 		// Try to get GPU name using WMIC
 		cmd := exec.Command("wmic", "path", "win32_VideoController", "get", "name")
+		cmd.SysProcAttr = getHiddenWindowAttr()
 		output, err := cmd.Output()
 		if err == nil {
 			lines := strings.Split(string(output), "\n")
@@ -196,6 +206,35 @@ func getGPUInfo() (name string, usage float64) {
 
 		// Try to get GPU usage using nvidia-smi (for NVIDIA GPUs)
 		cmd = exec.Command("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
+		cmd.SysProcAttr = getHiddenWindowAttr()
+		output, err = cmd.Output()
+		if err == nil {
+			var gpuUtil float64
+			_, err = fmt.Sscanf(strings.TrimSpace(string(output)), "%f", &gpuUtil)
+			if err == nil {
+				usage = gpuUtil
+				return
+			}
+		}
+
+		// Try PowerShell for GPU usage (works with most GPUs)
+		psCmd := `(Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Sum | Select-Object -ExpandProperty Sum`
+		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
+		cmd.SysProcAttr = getHiddenWindowAttr()
+		output, err = cmd.Output()
+		if err == nil {
+			var gpuUtil float64
+			_, err = fmt.Sscanf(strings.TrimSpace(string(output)), "%f", &gpuUtil)
+			if err == nil {
+				usage = gpuUtil
+				return
+			}
+		}
+
+		// Alternative: Try GPU 3D usage counter
+		psCmd2 := `(Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples | Where-Object { $_.InstanceName -like '*engtype_3D*' } | Measure-Object -Property CookedValue -Average | Select-Object -ExpandProperty Average`
+		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd2)
+		cmd.SysProcAttr = getHiddenWindowAttr()
 		output, err = cmd.Output()
 		if err == nil {
 			var gpuUtil float64

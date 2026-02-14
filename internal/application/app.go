@@ -22,6 +22,9 @@ type App struct {
 	workerServer *network.WorkerServer
 	sshServer    *network.SSHServer
 	sshPassword  string
+
+	// Dashboard controller (persistent for smooth gauge animations)
+	dashboardCtrl *ui.AdminDashboardController
 }
 
 func NewApp(fyneApp fyne.App) *App {
@@ -30,6 +33,15 @@ func NewApp(fyneApp fyne.App) *App {
 		state:        state.NewAppState(),
 		adminClients: make(map[string]*network.AdminClient),
 		sshPassword:  "admin123", // Default SSH password - should be configurable
+	}
+}
+
+// runOnMain safely runs a function on the main UI thread
+func (a *App) runOnMain(fn func()) {
+	if drv := fyne.CurrentApp().Driver(); drv != nil {
+		drv.DoFromGoroutine(fn, false)
+	} else {
+		fn() // Fallback to direct execution
 	}
 }
 
@@ -56,7 +68,9 @@ func (a *App) showRoleSelection() {
 		func() { a.selectAdminRole() },
 		func() { a.selectWorkerRole() },
 	)
-	a.window.SetContent(content)
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 	log.Println("APP: Role selection screen displayed")
 }
 
@@ -112,22 +126,39 @@ func (a *App) showAdminConnectScreen() {
 		func(ip string) { a.connectToWorker(ip) },
 		func() { a.backToRoleSelection() },
 	)
-	a.window.SetContent(content)
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 	log.Println("APP: Admin connect screen displayed")
 }
 
 func (a *App) showAdminDashboard() {
 	log.Println("APP: Building admin dashboard UI...")
-	content := ui.NewAdminDashboard(
-		a.state,
-		func() { a.disconnectAll() },
-		func() { a.backToRoleSelection() },
-		func() { a.showAdminConnectScreen() }, // Add worker
-		func(id string) { a.selectWorker(id) },
-		func(ip string) { a.showSSHDialog(ip) },
-	)
-	a.window.SetContent(content)
+
+	// Create controller if not exists
+	if a.dashboardCtrl == nil {
+		a.dashboardCtrl = ui.NewAdminDashboardController(
+			a.state,
+			func() { a.disconnectAll() },
+			func() { a.backToRoleSelection() },
+			func() { a.showAdminConnectScreen() }, // Add worker
+			func(id string) { a.selectWorker(id) },
+			func(ip string) { a.showSSHDialog(ip) },
+		)
+	}
+
+	content := a.dashboardCtrl.GetContent()
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 	log.Println("APP: Admin dashboard displayed")
+}
+
+// updateDashboardMetrics updates only the gauge values without rebuilding UI
+func (a *App) updateDashboardMetrics() {
+	if a.dashboardCtrl != nil {
+		a.dashboardCtrl.UpdateMetricsOnly()
+	}
 }
 
 func (a *App) showWorkerWaitingScreen() {
@@ -141,7 +172,9 @@ func (a *App) showWorkerWaitingScreen() {
 		network.DefaultWorkerPort,
 		func() { a.backToRoleSelection() },
 	)
-	a.window.SetContent(content)
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 	log.Println("APP: Worker waiting screen displayed")
 }
 
@@ -151,7 +184,9 @@ func (a *App) showWorkerConnectedScreen() {
 		a.state,
 		func() { a.backToRoleSelection() },
 	)
-	a.window.SetContent(content)
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 	log.Println("APP: Worker connected screen displayed")
 }
 
@@ -177,6 +212,9 @@ func (a *App) disconnectAll() {
 
 func (a *App) backToRoleSelection() {
 	log.Println("=== RETURNING TO ROLE SELECTION ===")
+
+	// Cleanup dashboard controller
+	a.dashboardCtrl = nil
 
 	// Cleanup admin clients
 	a.clientsMu.Lock()
@@ -232,15 +270,19 @@ func (a *App) connectToWorker(ip string) {
 				deviceInfo.Hostname, deviceInfo.OS, deviceInfo.IPAddress)
 			deviceInfo.ID = ip // Use IP as ID
 			a.state.AddConnectedDevice(deviceInfo)
+			// Force rebuild since we have a new worker
+			if a.dashboardCtrl != nil {
+				a.dashboardCtrl.ForceRebuild()
+			}
 			log.Println("APP: Showing admin dashboard with device data...")
 			a.showAdminDashboard()
 		},
-		// onMetricsUpdate - real-time metrics
+		// onMetricsUpdate - real-time metrics (just update values, don't rebuild)
 		func(cpuUsage, ramUsage, gpuUsage float64) {
 			a.state.UpdateDeviceMetricsByID(ip, cpuUsage, ramUsage, gpuUsage)
-			// Only refresh if this is the selected worker
+			// Only update gauges if this is the selected worker
 			if a.state.GetSelectedWorkerID() == ip {
-				a.showAdminDashboard()
+				a.updateDashboardMetrics()
 			}
 		},
 	)
@@ -342,5 +384,7 @@ func (a *App) showSSHTerminal(client *network.SSHClient, ip string) {
 		container.NewVScroll(outputLabel),
 	)
 
-	a.window.SetContent(content)
+	a.runOnMain(func() {
+		a.window.SetContent(content)
+	})
 }

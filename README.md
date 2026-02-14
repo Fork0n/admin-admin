@@ -1,8 +1,6 @@
 # admin:admin
 
-A Go-based desktop application with GUI for managing Admin and Worker nodes using the Fyne framework with TCP networking support.
-
-# NOTE! this project is on an extremely early version of development. As of now, you can build it and play with the gui and check the console output, work in progress!
+A Go-based desktop application with GUI for managing Admin and Worker nodes using the Fyne framework with TCP networking support and SSH remote access.
 
 ## Table of Contents
 
@@ -10,6 +8,7 @@ A Go-based desktop application with GUI for managing Admin and Worker nodes usin
 - [Requirements](#requirements)
 - [Building](#building)
 - [Features](#features)
+- [SSH Remote Access](#ssh-remote-access)
 - [Networking](#networking)
 - [Verbose Logging](#verbose-logging)
 - [Project Structure](#project-structure)
@@ -21,30 +20,30 @@ A Go-based desktop application with GUI for managing Admin and Worker nodes usin
 
 ### Run the Application
 ```powershell
-.\bin\control-system.exe
+.\bin\admin-admin.exe
 ```
 
 ### Build the Application
 ```powershell
-.\build.ps1
+.\build.ps1 -v "1.0"
 ```
 
 ### Connect Two PCs
 
 **Worker PC:**
-1. Run `.\bin\control-system.exe`
+1. Run `.\bin\admin-admin.exe`
 2. Click "Worker PC"
-3. Find IP address: `ipconfig` (look for IPv4 Address)
+3. Note the displayed IP address and port
 
 **Admin PC:**
-1. Run `.\bin\control-system.exe`
+1. Run `.\bin\admin-admin.exe`
 2. Click "Admin PC"
 3. Enter Worker's IP address
-4. Click "Connect to Worker"
+4. Click "Connect"
 
 ## Requirements
 
-- Go 1.25 or later
+- Go 1.21 or later
 - MSYS2 with MinGW64 (installed at `D:\msys2`)
 - Windows OS
 - CGO enabled for GUI support
@@ -53,136 +52,135 @@ A Go-based desktop application with GUI for managing Admin and Worker nodes usin
 
 ### Using Build Script (Recommended)
 ```powershell
+# Interactive - will prompt for version
 .\build.ps1
+
+# With version specified
+.\build.ps1 -v "1.0.0"
+.\build.ps1 -v "dev-0.8"
 ```
 
 ### Manual Build
 ```powershell
 $env:Path += ";D:\msys2\mingw64\bin"
 $env:CGO_ENABLED = 1
-go build -o bin/control-system.exe ./cmd/app
+go build -o bin/admin-admin.exe ./cmd/app
 ```
-
-### Silent Mode (No Console Window)
-```powershell
-$env:Path += ";D:\msys2\mingw64\bin"
-$env:CGO_ENABLED = 1
-go build -ldflags="-H windowsgui" -o bin/control-system.exe ./cmd/app
-```
-
-### Setting Up MSYS2 PATH Permanently
-
-1. Press Win + X and select System
-2. Click "Advanced system settings"
-3. Click "Environment Variables"
-4. Under "System variables" or "User variables", find "Path"
-5. Click "Edit" then "New"
-6. Add: `D:\msys2\mingw64\bin`
-7. Click OK on all dialogs
-8. Restart your terminal/IDE
 
 ## Features
 
 ### Role Selection
 - Choose between Admin PC and Worker PC modes
-- Clean, centered UI with intuitive buttons
+- Clean, centered UI with purple theme
 
 ### Admin Mode
-- Connect to remote workers via IP address
-- View real-time connection status
-- Display connected device information
-- Monitor worker system details
+- Connect to multiple remote workers via IP address
+- View real-time resource monitoring (CPU, RAM, GPU)
+- Radial gauge displays with smooth animations
+- SSH terminal access to worker machines
 - Disconnect from worker nodes
-- Refresh connection data
 - Return to role selection
 
 ### Worker Mode
 - TCP server listening on port 9876
+- SSH server on port 2222
 - Automatically sends system info when admin connects
-- Display local system information
-- Show hostname, OS, architecture, Go runtime version
-- Show CPU and RAM usage (placeholder)
-- Return to role selection
+- Real-time metrics streaming (1 Hz update rate)
+- Display local IP and port for easy connection
 
-### Networking
-- TCP-based client-server architecture
-- JSON protocol for message exchange
-- Real-time system information updates
-- Graceful connection/disconnection
-- Works on local networks and internet (with port forwarding)
-- Default port: 9876
+### Resource Monitoring
+- **CPU Usage**: Real-time CPU utilization percentage
+- **RAM Usage**: Memory usage with total/used display
+- **GPU Usage**: Graphics card utilization (NVIDIA, AMD, Intel)
+- **System Uptime**: Time since last boot
+- **Network Info**: Local IP address
+
+## SSH Remote Access
+
+admin:admin includes built-in SSH functionality for remote command execution.
+
+### SSH Server (Worker Side)
+
+When you select "Worker PC", an SSH server automatically starts:
+- **Port**: 2222
+- **Default Password**: `admin123`
+- **Username**: Any (e.g., "admin")
+
+The SSH host key is generated on first run and stored in:
+- Windows: `%APPDATA%\adminadmin\ssh_host_key`
+
+### Connecting via SSH from Admin Dashboard
+
+1. Connect to a worker from the Admin dashboard
+2. Click "Open SSH Terminal" button
+3. Enter credentials:
+   - **Username**: `admin` (or any username)
+   - **Password**: `admin123`
+4. Execute commands in the terminal interface
+
+### Connecting via External SSH Client
+
+You can also connect using any SSH client:
+
+```powershell
+# Using Windows OpenSSH
+ssh admin@192.168.0.67 -p 2222
+
+# Using PuTTY
+# Host: 192.168.0.67
+# Port: 2222
+# Username: admin
+# Password: admin123
+```
+
+### SSH Security Notes
+
+⚠️ **Important Security Considerations:**
+
+1. The default password `admin123` should be changed in production
+2. SSH host keys are auto-generated and stored locally
+3. The SSH server only runs when in Worker mode
+4. Consider firewall rules to restrict SSH access
+
+### Firewall Configuration for SSH
+
+```powershell
+# Allow SSH port (run as Administrator)
+New-NetFirewallRule -DisplayName "admin:admin SSH" -Direction Inbound -Protocol TCP -LocalPort 2222 -Action Allow
+```
 
 ## Networking
 
-### Network Setup
-
-**Same Local Network (Easiest):**
-- Both PCs must be on the same network (same WiFi or ethernet)
-- No firewall configuration needed (usually)
-- Use local IP addresses (192.168.x.x or 10.0.x.x)
-
-**Different Networks (Advanced):**
-- Requires port forwarding on Worker's router
-- Forward port 9876 to the Worker PC
-- Use Worker's public IP address
-- May require firewall rules
-
-### Testing on Same PC
-
-You can test with both roles on the same computer:
-
-**First Instance (Worker):**
-```powershell
-.\bin\control-system.exe
-# Click "Worker PC"
-```
-
-**Second Instance (Admin):**
-```powershell
-.\bin\control-system.exe
-# Click "Admin PC"
-# Enter: 127.0.0.1
-# Click "Connect to Worker"
-```
-
-### Finding Worker IP Address
-
-On Worker PC (Windows):
-```powershell
-# Method 1
-ipconfig | findstr IPv4
-
-# Method 2
-(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Wi-Fi").IPAddress
-```
-
 ### Network Protocol
 
-The system uses a simple JSON-based TCP protocol:
+The system uses JSON-based TCP protocol on port 9876:
 
-**Messages:**
-- system_info: Worker sends system information to Admin
-- ping/pong: Keep-alive messages
-- disconnect: Graceful disconnection
+**Message Types:**
+- `system_info`: Worker sends system information to Admin
+- `metrics`: Real-time CPU/RAM/GPU updates (1 Hz)
+- `admin_info`: Admin sends its hostname to Worker
+- `ping/pong`: Keep-alive messages
+- `disconnect`: Graceful disconnection
 
-**Port:** 9876 (TCP, configurable in code: network.DefaultWorkerPort)
+### Ports Used
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 9876 | TCP | Main communication |
+| 2222 | TCP | SSH remote access |
 
 ### Firewall Configuration
 
-If connection fails, allow the application through Windows Firewall:
+Allow the application through Windows Firewall:
 
 ```powershell
 # Run as Administrator
-New-NetFirewallRule -DisplayName "admin:admin" -Direction Inbound -Program "D:\adminadmin\bin\control-system.exe" -Action Allow
-```
+# Main application port
+New-NetFirewallRule -DisplayName "admin:admin Worker" -Direction Inbound -Protocol TCP -LocalPort 9876 -Action Allow
 
-Or manually:
-1. Open "Windows Defender Firewall with Advanced Security"
-2. Click "Inbound Rules" then "New Rule"
-3. Select "Program" and browse to the executable
-4. Select "Allow the connection"
-5. Apply to all profiles (Domain, Private, Public)
-6. Name it "admin:admin"
+# SSH port
+New-NetFirewallRule -DisplayName "admin:admin SSH" -Direction Inbound -Protocol TCP -LocalPort 2222 -Action Allow
+```
 
 ## Verbose Logging
 
@@ -193,7 +191,7 @@ The application includes comprehensive console logging for debugging.
 **Application Lifecycle:**
 ```
 === APPLICATION STARTING ===
-APP: Window created (800x600)
+APP: Window created (900x600)
 APP: Showing role selection screen
 APP: Role selection screen displayed
 === APPLICATION SHUTTING DOWN ===
