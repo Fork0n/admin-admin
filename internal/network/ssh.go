@@ -1,12 +1,17 @@
 package network
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
 
@@ -47,10 +52,10 @@ func (s *SSHServer) Start(password string) error {
 		return fmt.Errorf("SSH server already running")
 	}
 
-	// Generate host key
-	hostKey, err := generateHostKey()
+	// Generate or load host key
+	hostKey, err := getOrCreateHostKey()
 	if err != nil {
-		return fmt.Errorf("failed to generate host key: %w", err)
+		return fmt.Errorf("failed to get host key: %w", err)
 	}
 
 	// Configure SSH server
@@ -233,42 +238,59 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 	}
 }
 
-// generateHostKey generates an RSA host key for the SSH server
-func generateHostKey() (ssh.Signer, error) {
-	// For simplicity, we'll use a deterministic key based on hostname
-	// In production, you'd want to persist this key
-	key := []byte(`-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn
-NhAAAAAwEAAQAAAIEA0Z3VS5+E0pD49GKp+CKslbkYy0ND4MQm3w9bHdNFvUfJv2XgLFG
-xyGwNj7MrxaIZZvGpwJv3K5OMUf3u2vUWmF0DFGG6Q5T2LzMaGPX9UXJP0oQnBh0RQML
-AAAIQN2wd0rdIHdK3SB3StAAAAB3NzaC1yc2EAAACBANGD1UufhNKQ+PRiqfgirJW5GMtD
-Q+DEJt8PWx3TRb1Hyb9l4CxRschsDY+zK8WiGWbxqcCb9yuTjFH97tr1FphdAxRhukOU9
-i8zGhj1/VFyT9KEJwYdEUDCwAAAAMBAAEAAACAAHxsUjyWE6NJ4TQjGv7mL2WdJmyI0nz
-YxZogSpgcRr3qgmN/KRnR3r1ByVABZ8xAWJNY0V3AE+N7NeU/KaXTKyuN0J3tR5J9BNCK
------END OPENSSH PRIVATE KEY-----`)
-
-	signer, err := ssh.ParsePrivateKey(key)
+// getHostKeyPath returns the path to store the SSH host key
+func getHostKeyPath() string {
+	// Store in user's config directory
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		// Generate a simple key if parsing fails
-		return generateSimpleKey()
+		configDir = "."
 	}
-	return signer, nil
+	keyDir := filepath.Join(configDir, "adminadmin")
+	os.MkdirAll(keyDir, 0700)
+	return filepath.Join(keyDir, "ssh_host_key")
 }
 
-func generateSimpleKey() (ssh.Signer, error) {
-	// Use a hardcoded RSA key for demo purposes
-	// In production, generate and store properly
-	pemKey := `-----BEGIN RSA PRIVATE KEY-----
-MIICXQIBAAJBALRiMLAHudeSA2ai09e3sbnpL8L2RXwmG1kPQXG6MmjmI6VAh4qM
-xLHf9HQqb1NMfgDP5ELRV8v9FXCFG5OUXM0CAwEAAQJAIgTCKuaEqr6I8w2tBLmM
-RsHH6jPtP/m5GzP6NrR4C2wPvM4EUydHl5F1BLZk7R0/b7Nd3OeJQQwnHG3Dqvnl
-AQIhAON0BMpuV6F8YQge2aOJHFn8NfMp7WcE2w5B+QePwyWtAiEAy5jF8nmNrgMP
-uH6vM8M+PgkEM9I9EyBRmGbOYnZlknECIGd6Y5S8M9Tsh5OSwXN4O8UphmXD/shs
-QQmhnx4IhdZdAiEAslJ/IxU0l/xl+W+5bBZqXPNB8b1xp/vsO/3y95hR0cECIQCr
-mNOyC9ceBUPRbkOLNyUEhCh0fly1yqRdRP7mJ/1nGw==
------END RSA PRIVATE KEY-----`
+// getOrCreateHostKey loads existing host key or generates a new one
+func getOrCreateHostKey() (ssh.Signer, error) {
+	keyPath := getHostKeyPath()
 
-	return ssh.ParsePrivateKey([]byte(pemKey))
+	// Try to load existing key
+	keyData, err := os.ReadFile(keyPath)
+	if err == nil {
+		signer, err := ssh.ParsePrivateKey(keyData)
+		if err == nil {
+			log.Printf("SSH: Loaded existing host key from %s\n", keyPath)
+			return signer, nil
+		}
+	}
+
+	// Generate new key
+	log.Println("SSH: Generating new host key...")
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
+	}
+
+	// Encode to PEM
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+
+	// Save to file
+	if err := os.WriteFile(keyPath, privateKeyPEM, 0600); err != nil {
+		log.Printf("SSH: Warning - could not save host key: %v\n", err)
+	} else {
+		log.Printf("SSH: Host key saved to %s\n", keyPath)
+	}
+
+	// Parse and return
+	signer, err := ssh.ParsePrivateKey(privateKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse generated key: %w", err)
+	}
+
+	return signer, nil
 }
 
 // SSHClient provides SSH client functionality for admin
