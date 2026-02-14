@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,22 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
+)
+
+// Terminal color scheme (purple theme)
+var (
+	termBgColor      = color.NRGBA{R: 18, G: 12, B: 28, A: 255}    // Deep purple-black
+	termFgColor      = color.NRGBA{R: 220, G: 215, B: 230, A: 255} // Light purple-white
+	termPromptColor  = color.NRGBA{R: 180, G: 100, B: 255, A: 255} // Bright purple
+	termAccentColor  = color.NRGBA{R: 138, G: 43, B: 226, A: 255}  // BlueViolet
+	termSuccessColor = color.NRGBA{R: 100, G: 220, B: 150, A: 255} // Green
+	termErrorColor   = color.NRGBA{R: 255, G: 100, B: 120, A: 255} // Red
+	termWarningColor = color.NRGBA{R: 255, G: 200, B: 100, A: 255} // Yellow
+	termInfoColor    = color.NRGBA{R: 100, G: 180, B: 255, A: 255} // Blue
+	termDimColor     = color.NRGBA{R: 120, G: 110, B: 140, A: 255} // Dim purple
+	termBorderColor  = color.NRGBA{R: 80, G: 50, B: 120, A: 255}   // Purple border
+	termInputBg      = color.NRGBA{R: 30, G: 20, B: 45, A: 255}    // Slightly lighter input bg
+	termHeaderBg     = color.NRGBA{R: 45, G: 30, B: 65, A: 255}    // Header background
 )
 
 // SSHTerminal represents a terminal-like SSH interface
@@ -248,12 +265,9 @@ func (w *SSHTerminalWindow) RemoveTab(id string) {
 
 	delete(w.tabs, id)
 
-	// If no tabs left, show placeholder
+	// If no tabs left, close the window
 	if len(w.tabs) == 0 {
-		placeholder := container.NewCenter(
-			widget.NewLabel("No SSH sessions. Connect to a worker first."),
-		)
-		w.window.SetContent(container.NewStack(placeholder, w.tabBar))
+		w.window.Close()
 	}
 }
 
@@ -277,45 +291,34 @@ func (w *SSHTerminalWindow) HasTab(id string) bool {
 
 // createTerminalUI creates the terminal-like UI for a single tab
 func createTerminalUI(hostname, ip string, onCommand func(string) string, onClose func()) fyne.CanvasObject {
-	// Terminal colors
-	bgColor := color.NRGBA{R: 20, G: 15, B: 30, A: 255}       // Dark purple-black
-	promptColor := color.NRGBA{R: 138, G: 43, B: 226, A: 255} // Purple
+	// Output area - custom rich text display with color support
+	outputText := widget.NewRichText()
+	outputText.Wrapping = fyne.TextWrapWord
 
-	// Output area - use Entry with MultiLine for copy support
-	outputEntry := widget.NewMultiLineEntry()
-	outputEntry.Wrapping = fyne.TextWrapWord
-	outputEntry.TextStyle = fyne.TextStyle{Monospace: true}
-
-	// Make it read-only but selectable (we'll manage content ourselves)
-	outputEntry.Disable()
-
-	outputScroll := container.NewVScroll(outputEntry)
-	outputScroll.SetMinSize(fyne.NewSize(780, 380))
+	outputScroll := container.NewVScroll(outputText)
+	outputScroll.SetMinSize(fyne.NewSize(750, 350))
 
 	// Command history
 	var history []string
-	var historyIndex int
-	_ = historyIndex // Will be used for up/down arrow navigation in future
+	historyIndex := 0
+	_ = historyIndex // Used in future for up/down arrow navigation
 
-	// Output lines storage
-	var outputLines []string
+	// Output lines storage (raw text with ANSI codes stripped for copy)
+	var outputSegments []widget.RichTextSegment
 	var outputMu sync.Mutex
 
 	// Function to update output display
 	updateOutput := func() {
-		// Run UI updates on main thread
 		if app := fyne.CurrentApp(); app != nil {
 			if drv := app.Driver(); drv != nil {
 				drv.DoFromGoroutine(func() {
 					outputMu.Lock()
-					text := strings.Join(outputLines, "\n")
+					segs := make([]widget.RichTextSegment, len(outputSegments))
+					copy(segs, outputSegments)
 					outputMu.Unlock()
 
-					outputEntry.Enable()
-					outputEntry.SetText(text)
-					outputEntry.Disable()
-
-					// Scroll to bottom
+					outputText.Segments = segs
+					outputText.Refresh()
 					outputScroll.ScrollToBottom()
 				}, false)
 				return
@@ -323,18 +326,79 @@ func createTerminalUI(hostname, ip string, onCommand func(string) string, onClos
 		}
 	}
 
-	// Add welcome message
-	outputMu.Lock()
-	outputLines = append(outputLines, fmt.Sprintf("Connected to %s (%s)", hostname, ip))
-	outputLines = append(outputLines, fmt.Sprintf("SSH session started at %s", time.Now().Format("2006-01-02 15:04:05")))
-	outputLines = append(outputLines, "Type 'help' for available commands, 'exit' to close")
-	outputLines = append(outputLines, "")
-	outputMu.Unlock()
+	// Helper to add line with proper styling
+	addLine := func(text string, isPrompt bool, isError bool) {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+
+		if isPrompt {
+			// Prompt line: [hostname] $ command
+			outputSegments = append(outputSegments, &widget.TextSegment{
+				Text: "[",
+				Style: widget.RichTextStyle{
+					Inline:    true,
+					TextStyle: fyne.TextStyle{Monospace: true},
+				},
+			})
+			outputSegments = append(outputSegments, &widget.TextSegment{
+				Text: hostname,
+				Style: widget.RichTextStyle{
+					Inline:    true,
+					TextStyle: fyne.TextStyle{Monospace: true, Bold: true},
+				},
+			})
+			outputSegments = append(outputSegments, &widget.TextSegment{
+				Text: "] $ ",
+				Style: widget.RichTextStyle{
+					Inline:    true,
+					TextStyle: fyne.TextStyle{Monospace: true},
+				},
+			})
+			// The actual command
+			parts := strings.SplitN(text, "$ ", 2)
+			if len(parts) > 1 {
+				outputSegments = append(outputSegments, &widget.TextSegment{
+					Text: parts[1] + "\n",
+					Style: widget.RichTextStyle{
+						Inline:    true,
+						TextStyle: fyne.TextStyle{Monospace: true, Bold: true},
+					},
+				})
+			} else {
+				outputSegments = append(outputSegments, &widget.TextSegment{
+					Text:  "\n",
+					Style: widget.RichTextStyle{Inline: true},
+				})
+			}
+		} else {
+			// Regular output line
+			style := fyne.TextStyle{Monospace: true}
+			if isError {
+				style.Bold = true
+			}
+			outputSegments = append(outputSegments, &widget.TextSegment{
+				Text: text + "\n",
+				Style: widget.RichTextStyle{
+					Inline:    true,
+					TextStyle: style,
+				},
+			})
+		}
+	}
+
+	// Add welcome message with styling
+	addLine("╔══════════════════════════════════════════════════════════════╗", false, false)
+	addLine(fmt.Sprintf("║  SSH Session: %s", padRight(hostname+" ("+ip+")", 48)+"║"), false, false)
+	addLine(fmt.Sprintf("║  Started: %s", padRight(time.Now().Format("2006-01-02 15:04:05"), 51)+"║"), false, false)
+	addLine("╠══════════════════════════════════════════════════════════════╣", false, false)
+	addLine("║  Commands: help, clear, exit                                 ║", false, false)
+	addLine("╚══════════════════════════════════════════════════════════════╝", false, false)
+	addLine("", false, false)
 	updateOutput()
 
-	// Command input
+	// Command input - custom styled
 	cmdEntry := widget.NewEntry()
-	cmdEntry.SetPlaceHolder("Enter command...")
+	cmdEntry.SetPlaceHolder("Type command and press Enter...")
 
 	// Execute command function
 	executeCmd := func() {
@@ -347,11 +411,8 @@ func createTerminalUI(hostname, ip string, onCommand func(string) string, onClos
 		history = append(history, cmd)
 		historyIndex = len(history)
 
-		// Show command in output
-		prompt := fmt.Sprintf("[%s] $ %s", hostname, cmd)
-		outputMu.Lock()
-		outputLines = append(outputLines, prompt)
-		outputMu.Unlock()
+		// Show command in output with prompt styling
+		addLine(fmt.Sprintf("[%s] $ %s", hostname, cmd), true, false)
 
 		// Clear input
 		cmdEntry.SetText("")
@@ -360,43 +421,58 @@ func createTerminalUI(hostname, ip string, onCommand func(string) string, onClos
 		switch strings.ToLower(cmd) {
 		case "clear", "cls":
 			outputMu.Lock()
-			outputLines = []string{}
+			outputSegments = []widget.RichTextSegment{}
 			outputMu.Unlock()
 			updateOutput()
 			return
 		case "exit", "quit":
-			outputMu.Lock()
-			outputLines = append(outputLines, "Session closed.")
-			outputMu.Unlock()
+			addLine("Session terminated.", false, false)
 			updateOutput()
 			if onClose != nil {
-				onClose()
+				time.AfterFunc(500*time.Millisecond, onClose)
 			}
 			return
 		case "help":
-			outputMu.Lock()
-			outputLines = append(outputLines, "Available commands:")
-			outputLines = append(outputLines, "  clear/cls  - Clear terminal")
-			outputLines = append(outputLines, "  exit/quit  - Close session")
-			outputLines = append(outputLines, "  help       - Show this help")
-			outputLines = append(outputLines, "  Any other command will be executed on the remote system")
-			outputLines = append(outputLines, "")
-			outputMu.Unlock()
+			addLine("┌─────────────────────────────────────┐", false, false)
+			addLine("│         Available Commands          │", false, false)
+			addLine("├─────────────────────────────────────┤", false, false)
+			addLine("│  clear, cls  │ Clear terminal       │", false, false)
+			addLine("│  exit, quit  │ Close session        │", false, false)
+			addLine("│  help        │ Show this help       │", false, false)
+			addLine("├─────────────────────────────────────┤", false, false)
+			addLine("│  Other commands run on remote host  │", false, false)
+			addLine("└─────────────────────────────────────┘", false, false)
+			addLine("", false, false)
 			updateOutput()
 			return
 		}
 
 		// Execute on remote
 		if onCommand != nil {
+			// Show loading indicator
+			addLine("Executing...", false, false)
+			updateOutput()
+
 			go func() {
 				result := onCommand(cmd)
+
+				// Remove "Executing..." line
 				outputMu.Lock()
-				if result != "" {
-					lines := strings.Split(strings.TrimRight(result, "\n"), "\n")
-					outputLines = append(outputLines, lines...)
+				if len(outputSegments) > 0 {
+					outputSegments = outputSegments[:len(outputSegments)-1]
 				}
-				outputLines = append(outputLines, "")
 				outputMu.Unlock()
+
+				if result != "" {
+					result = stripANSI(result)
+					lines := strings.Split(strings.TrimRight(result, "\n\r"), "\n")
+					for _, line := range lines {
+						isErr := strings.Contains(strings.ToLower(line), "error") ||
+							strings.Contains(strings.ToLower(line), "failed")
+						addLine(line, false, isErr)
+					}
+				}
+				addLine("", false, false)
 				updateOutput()
 			}()
 		}
@@ -408,43 +484,101 @@ func createTerminalUI(hostname, ip string, onCommand func(string) string, onClos
 	}
 
 	// Background
-	bg := canvas.NewRectangle(bgColor)
+	bg := canvas.NewRectangle(termBgColor)
 
-	// Prompt label
-	promptLabel := canvas.NewText(fmt.Sprintf("[%s] $", hostname), promptColor)
-	promptLabel.TextStyle = fyne.TextStyle{Monospace: true}
+	// Input background
+	inputBg := canvas.NewRectangle(termInputBg)
+	inputBg.CornerRadius = 4
 
-	// Input row with prompt
+	// Prompt label with purple color
+	promptLabel := canvas.NewText(fmt.Sprintf("[%s] $", hostname), termPromptColor)
+	promptLabel.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
+	promptLabel.TextSize = 14
+
+	// Input row with styled background
 	inputRow := container.NewBorder(nil, nil,
-		container.NewHBox(promptLabel),
+		container.NewPadded(promptLabel),
 		nil,
 		cmdEntry,
 	)
 
-	// Close button
-	closeBtn := widget.NewButton("✕ Close Tab", func() {
+	inputContainer := container.NewStack(
+		inputBg,
+		container.NewPadded(inputRow),
+	)
+
+	// Close button - styled
+	closeBtn := widget.NewButton("✕ Close", func() {
 		if onClose != nil {
 			onClose()
 		}
 	})
+	closeBtn.Importance = widget.DangerImportance
 
-	// Header
-	headerLabel := widget.NewLabelWithStyle(
-		fmt.Sprintf("SSH: %s (%s)", hostname, ip),
-		fyne.TextAlignLeading,
-		fyne.TextStyle{Bold: true, Monospace: true},
+	// Header with gradient-like effect
+	headerBg := canvas.NewRectangle(termHeaderBg)
+	headerBg.CornerRadius = 6
+
+	headerIcon := canvas.NewText("⌘", termPromptColor)
+	headerIcon.TextSize = 18
+	headerIcon.TextStyle = fyne.TextStyle{Bold: true}
+
+	headerTitle := canvas.NewText(fmt.Sprintf("SSH: %s", hostname), termFgColor)
+	headerTitle.TextSize = 14
+	headerTitle.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+
+	headerIP := canvas.NewText(ip, termDimColor)
+	headerIP.TextSize = 12
+	headerIP.TextStyle = fyne.TextStyle{Monospace: true}
+
+	headerLeft := container.NewHBox(
+		headerIcon,
+		widget.NewSeparator(),
+		headerTitle,
+		headerIP,
 	)
-	header := container.NewBorder(nil, nil, headerLabel, closeBtn)
 
-	// Main layout
-	content := container.NewBorder(
-		header,
-		inputRow,
+	headerRight := container.NewHBox(
+		closeBtn,
+	)
+
+	headerContent := container.NewBorder(nil, nil, headerLeft, headerRight)
+	header := container.NewStack(headerBg, container.NewPadded(headerContent))
+
+	// Output container with border effect
+	outputBorder := canvas.NewRectangle(termBorderColor)
+	outputBorder.CornerRadius = 4
+	outputBorder.StrokeWidth = 1
+	outputBorder.StrokeColor = termBorderColor
+
+	outputContainer := container.NewStack(
+		outputBorder,
+		container.NewPadded(outputScroll),
+	)
+
+	// Main layout with spacing
+	mainContent := container.NewBorder(
+		container.NewVBox(header, widget.NewSeparator()),
+		container.NewVBox(widget.NewSeparator(), inputContainer),
 		nil, nil,
-		outputScroll,
+		outputContainer,
 	)
 
-	return container.NewStack(bg, container.NewPadded(content))
+	return container.NewStack(bg, container.NewPadded(mainContent))
+}
+
+// stripANSI removes ANSI escape codes from a string
+func stripANSI(str string) string {
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07`)
+	return ansiRegex.ReplaceAllString(str, "")
+}
+
+// padRight pads a string to the right with spaces
+func padRight(s string, length int) string {
+	if len(s) >= length {
+		return s[:length]
+	}
+	return s + strings.Repeat(" ", length-len(s))
 }
 
 // TerminalEntry is a custom entry with key handling
