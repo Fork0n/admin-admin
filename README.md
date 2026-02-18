@@ -2,6 +2,8 @@
 
 A Go-based desktop application with GUI for managing Admin and Worker nodes using the Fyne framework with TCP networking support and SSH remote access.
 
+**Maximum Compatibility** - Uses software rendering by default for universal device support. See [OPENGL_FIX.md](OPENGL_FIX.md) for details.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -15,6 +17,14 @@ A Go-based desktop application with GUI for managing Admin and Worker nodes usin
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Technology Stack](#technology-stack)
+
+**Additional Documentation:**
+- [QUICKSTART.md](QUICKSTART.md) - 2-minute setup guide for new users
+- [FAQ.md](FAQ.md) - Frequently asked questions and troubleshooting
+- [REQUIREMENTS.md](REQUIREMENTS.md) - Detailed system requirements and compatibility
+- [OPENGL_FIX.md](OPENGL_FIX.md) - OpenGL compatibility and rendering modes
+- [BUILD.md](BUILD.md) - Platform-specific build instructions
+- [FIREWALL.md](FIREWALL.md) - Firewall configuration guide
 
 ## Quick Start
 
@@ -43,10 +53,64 @@ A Go-based desktop application with GUI for managing Admin and Worker nodes usin
 
 ## Requirements
 
+### Minimum System Requirements
+
+#### Hardware
+- **CPU**: x86-64 processor (Intel/AMD), 1 GHz or faster
+  - Single core sufficient
+  - Dual-core recommended for smoother performance
+- **RAM**: 100 MB available memory
+  - Typical usage: 50-80 MB
+  - Each SSH session adds ~20 MB
+  - Each worker connection adds ~10 MB (Admin side)
+- **Storage**: 30 MB free disk space
+  - Executable: ~24 MB
+  - Runtime cache and keys: ~5 MB
+- **Network**: Ethernet or Wi-Fi adapter
+  - Minimum 1 Mbps for metrics streaming
+  - 10 Mbps recommended for multiple workers
+- **Display**: Any resolution (minimum tested: 800x600)
+  - Recommended: 1280x720 or higher
+- **GPU**: Not required
+  - Software rendering enabled by default
+  - Optional GPU acceleration available
+
+#### Software
+- **Operating System**:
+  - **Windows**: 7 SP1 or later (10/11 recommended)
+  - **Linux**: Kernel 3.2+ with X11 or Wayland
+  - **macOS**: 10.13 (High Sierra) or later
+- **Graphics**: No OpenGL required (as much as I tested, but some reports are caused by "Fyne error:
+  window creation error; Cause: APIUnavailable: WGL. The driver does not appear to support OpenGL)
+  - CPU-based software rendering handles all UI
+  - Works on VMs, RDP, headless systems with display
+- **Network**: Standard TCP/IP stack (included in all modern OS)
+- **Dependencies**: None - fully self-contained binary
+
+#### Tested Configurations
+- ✅ Windows 10/11 (physical machines)
+- ✅ Windows VMs (VirtualBox, VMware, Hyper-V)
+- ✅ Ubuntu 20.04+ / Debian 11+
+- ✅ WSL2 with X server
+- ✅ Remote Desktop (RDP, VNC)
+- ✅ Machines without dedicated GPU
+- ✅ Systems with integrated graphics only
+
+### Build Requirements (Developers Only)
 - Go 1.21 or later
-- MSYS2 with MinGW64 (installed at `D:\msys2`)
-- Windows OS
+- MSYS2 with MinGW64 (installed at `D:\msys2`) for Windows builds
 - CGO enabled for GUI support
+- GCC compiler (mingw-w64 on Windows, gcc on Linux, Xcode on macOS)
+
+### Compatibility
+admin:admin uses CPU-based software rendering by default, ensuring compatibility on:
+- All modern Windows, Linux, and macOS systems
+- Virtual machines (VMware, VirtualBox, Hyper-V, etc.)
+- Remote Desktop (RDP, VNC, etc.)
+- Older hardware without OpenGL support
+- Systems with basic or outdated graphics drivers
+
+Users with modern GPUs can optionally enable hardware rendering for slightly better performance (see [OPENGL_FIX.md](OPENGL_FIX.md)).
 
 ## Building
 
@@ -377,20 +441,45 @@ Remove-Item -Force bin\admin-admin*.exe
 
 ## Troubleshooting
 
-### Connection Refused
+**For common issues and quick fixes, see [FAQ.md](FAQ.md)**
 
-**Problem:** Cannot connect to worker
+### Quick Reference
 
-**Solutions:**
-1. Verify Worker PC is running in Worker mode
-2. Check the IP address is correct (use `ipconfig` on Worker)
-3. Verify both PCs are on the same network
-4. Check Windows Firewall (see Firewall Configuration section)
-5. Try `127.0.0.1` if testing on same PC
+**Can't connect to worker?**
+- Check firewall on Worker PC (ports 9876, 2222)
+- Verify both PCs on same network  
+- Use correct IP address (run `ipconfig` on Worker)
+- See [FAQ.md](FAQ.md#-cant-connect-to-worker)
 
-### Build Fails with "gcc not found"
+**SSH not working?**
+- Default credentials: `admin` / `admin`
+- Check port 2222 firewall rule
+- See [FAQ.md](FAQ.md#-ssh-connection-fails)
 
-**Problem:** CGO requires gcc compiler
+**OpenGL error?** (Very rare in v1.0.6)
+```powershell
+$env:FYNE_DISABLE_HARDWARE_RENDERING="1"
+.\admin-admin.exe
+```
+See [FAQ.md](FAQ.md#-opengl-error-rare) | [OPENGL_FIX.md](OPENGL_FIX.md)
+
+**GPU shows N/A?**
+- Normal for integrated graphics, VMs, older hardware
+- See [FAQ.md](FAQ.md#-gpu-shows-na-or-0)
+
+**Application won't start?**
+- Run from terminal to see errors
+- Check 64-bit OS, 100 MB RAM
+- See [FAQ.md](FAQ.md#-application-wont-start)
+
+**For complex/unique issues:**
+- [GitHub Issues](https://github.com/yourusername/adminadmin/issues)
+
+---
+
+### Build Issues
+
+**"gcc not found" error:**
 
 **Solutions:**
 
@@ -420,12 +509,41 @@ xcode-select --install
 
 See BUILD.md for detailed platform-specific instructions.
 
-### Worker Port Already in Use
+### SSH Connection Issues
 
-**Problem:** Port 9876 already in use
+**Problem:** SSH terminal fails to connect
 
 **Solutions:**
-1. Check if another instance is running: `netstat -ano | findstr 9876`
+1. Verify credentials (default: `admin` / `admin`)
+2. Check worker is in Worker mode
+3. Check port 2222 is not blocked by firewall
+4. Ensure SSH server started (check worker logs)
+5. Try external SSH client to verify: `ssh admin@<worker-ip> -p 2222`
+
+### GPU Shows as "N/A"
+
+**Problem:** GPU usage always shows 0% or N/A
+
+**Cause:** GPU monitoring requires vendor-specific libraries:
+- NVIDIA: `nvidia-smi` must be in PATH
+- AMD: Limited support on Windows
+- Intel: Limited integrated GPU monitoring
+
+**Solutions:**
+1. Install GPU vendor tools (NVIDIA drivers include nvidia-smi)
+2. GPU monitoring works best on NVIDIA GPUs
+3. This is a known limitation, CPU/RAM monitoring works reliably
+
+### Worker Port Already in Use
+
+**Problem:** Port 9876 or 2222 already in use
+
+**Solutions:**
+1. Check if another instance is running:
+   ```powershell
+   netstat -ano | findstr "9876"
+   netstat -ano | findstr "2222"
+   ```
 2. Kill the process using the port
 3. Restart the application
 
@@ -434,20 +552,37 @@ See BUILD.md for detailed platform-specific instructions.
 **Problem:** Connected but no device info shows
 
 **Solutions:**
-1. Click "Refresh" button on Admin dashboard
-2. Disconnect and reconnect
-3. Check console logs for errors
+1. Wait a few seconds for metrics to update
+2. Check console logs for errors
+3. Disconnect and reconnect
 4. Restart both applications
+5. Verify network connectivity
 
 ### Window Doesn't Appear
 
 **Problem:** Application runs but window doesn't show
 
 **Solutions:**
-1. Check if application is running in background
-2. Kill any existing processes
-3. Restart application
-4. Check console for errors
+1. Check if application is running in background (Task Manager)
+2. Kill any existing admin-admin.exe processes
+3. Check for OpenGL errors in console
+4. Software rendering should fix this (enabled by default)
+5. Try running from command prompt to see error messages
+
+### Build Errors on Linux
+
+**Problem:** Build fails with `unknown field HideWindow`
+
+**Cause:** Windows-specific code in cross-platform build
+
+**Solution:** Use platform-specific builds:
+```bash
+# Linux
+GOOS=linux GOARCH=amd64 go build -o bin/admin-admin ./cmd/app
+
+# Windows from Linux
+GOOS=windows GOARCH=amd64 go build -o bin/admin-admin.exe ./cmd/app
+```
 
 ## Technology Stack
 
