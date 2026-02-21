@@ -230,6 +230,36 @@ ssh admin@192.168.0.67 -p 2222
 New-NetFirewallRule -DisplayName "admin:admin SSH" -Direction Inbound -Protocol TCP -LocalPort 2222 -Action Allow
 ```
 
+### SSH commands
+SSH is basically like a cmd/powershell/bash window, when using it you must refer to your os of choiche command list, for example `ls` won't wotrk on windows, use the windows alternative `dir`
+you may use this conversion table to make sure you're running an actual command
+### Linux vs Windows Command Reference
+
+| Linux Command | Windows Command | Short Description |
+|--------------|-----------------|------------------|
+| `pwd` | `cd` | Show current directory path |
+| `ls` | `dir` | List directory contents |
+| `cd` | `cd` | Change directory |
+| `mkdir` | `mkdir` | Create new directory |
+| `rm file` | `del file` | Delete a file |
+| `rm -rf folder` | `rmdir /s /q folder` | Delete directory recursively |
+| `cp` | `copy` | Copy files |
+| `mv` | `move` | Move or rename files |
+| `cat file` | `type file` | Display file contents |
+| `clear` | `cls` | Clear terminal screen |
+| `whoami` | `whoami` | Show current user |
+| `ps aux` | `tasklist` | List running processes |
+| `kill PID` | `taskkill /PID PID` | Terminate process by PID |
+| `top` | `taskmgr` | Real-time process viewer |
+| `df -h` | `wmic logicaldisk get size,freespace,caption` | Show disk usage |
+| `free -h` | `systeminfo` | Display memory information |
+| `ping host` | `ping host` | Test network connectivity |
+| `ifconfig` / `ip a` | `ipconfig` | Show network configuration |
+| `chmod` | `icacls` | Modify file permissions |
+| `chown` | `takeown` | Change file ownership |
+| `history` | `doskey /history` | Show command history |
+| `exit` | `exit` | Close terminal session |
+
 ## Networking
 
 ### Network Protocol
