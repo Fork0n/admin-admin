@@ -330,9 +330,32 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 	cmd.Stdout = channel
 	cmd.Stderr = channel
 
+	// Run the command and capture the exit code
+	exitStatus := 0
 	if err := cmd.Run(); err != nil {
-		io.WriteString(channel, fmt.Sprintf("Error: %v\r\n", err))
+		// Try to extract exit code from error
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if status, ok := exitErr.Sys().(interface{ ExitStatus() int }); ok {
+				exitStatus = status.ExitStatus()
+			} else {
+				exitStatus = 1
+			}
+		} else {
+			io.WriteString(channel, fmt.Sprintf("Error: %v\r\n", err))
+			exitStatus = 1
+		}
 	}
+
+	// Send exit status to the SSH client
+	// This prevents "exited without exit status or exit signal" errors
+	type exitStatusMsg struct {
+		Status uint32
+	}
+
+	// Send the exit-status request
+	channel.SendRequest("exit-status", false, ssh.Marshal(&exitStatusMsg{
+		Status: uint32(exitStatus),
+	}))
 }
 
 // getHostKeyPath returns the path to store the SSH host key
@@ -447,10 +470,22 @@ func (c *SSHClient) ExecuteCommand(cmd string) (string, error) {
 		log.Printf("SSH Client: PTY request failed, continuing without: %v", err)
 	}
 
-	// For commands that might prompt for input, we need to handle them differently
-	// Run with CombinedOutput for simple commands
+	// Get combined output
 	output, err := session.CombinedOutput(cmd)
+
+	// Check if the error is just about missing exit status/signal
+	// This is a common issue with SSH sessions but doesn't mean the command failed
 	if err != nil {
+		// If we got output and the error is about exit status, ignore the error
+		errStr := err.Error()
+		if len(output) > 0 && (strings.Contains(errStr, "exit status") ||
+			strings.Contains(errStr, "exit signal") ||
+			strings.Contains(errStr, "exited without")) {
+			// Command produced output, ignore the exit status error
+			log.Printf("SSH Client: Command completed with output (ignoring exit status error)")
+			return string(output), nil
+		}
+		// Real error - return it along with any output we got
 		return string(output), fmt.Errorf("command failed: %w", err)
 	}
 
