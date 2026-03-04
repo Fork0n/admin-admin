@@ -1,3 +1,5 @@
+//the code lowkey might suck but it's not that bad
+
 package network
 
 import (
@@ -15,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -209,8 +212,23 @@ func (s *SSHServer) handleConnection(conn net.Conn) {
 	}
 }
 
+// sessionState holds per-session persistent state (e.g. working directory)
+type sessionState struct {
+	cwd string
+}
+
+func newSessionState() *sessionState {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return &sessionState{cwd: home}
+}
+
 func (s *SSHServer) handleChannel(channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
+
+	state := newSessionState()
 
 	for req := range requests {
 		switch req.Type {
@@ -224,7 +242,7 @@ func (s *SSHServer) handleChannel(channel ssh.Channel, requests <-chan *ssh.Requ
 				cmdLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
 				if cmdLen > 0 && cmdLen <= len(req.Payload)-4 {
 					cmd := string(req.Payload[4 : 4+cmdLen])
-					s.executeCommand(channel, cmd)
+					s.executeCommand(channel, cmd, state)
 				}
 			}
 			return
@@ -262,14 +280,11 @@ func (s *SSHServer) startShell(channel ssh.Channel) {
 	cmd.Wait()
 }
 
-func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
+func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string, state *sessionState) {
 	var cmd *exec.Cmd
-
-	// For commands that might need auto-accept, modify them
 	modifiedCmd := cmdStr
 
 	if runtime.GOOS == "windows" {
-		// Auto-accept for winget - add all necessary flags to avoid prompts
 		lowerCmd := strings.ToLower(cmdStr)
 		if strings.Contains(lowerCmd, "winget") {
 			if strings.Contains(lowerCmd, "install") || strings.Contains(lowerCmd, "upgrade") {
@@ -279,13 +294,11 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 				if !strings.Contains(lowerCmd, "--accept-package-agreements") {
 					modifiedCmd += " --accept-package-agreements"
 				}
-				// Disable interactive mode
 				if !strings.Contains(lowerCmd, "--disable-interactivity") {
 					modifiedCmd += " --disable-interactivity"
 				}
 			}
 		}
-		// For choco
 		if strings.Contains(lowerCmd, "choco") && strings.Contains(lowerCmd, "install") {
 			if !strings.Contains(lowerCmd, "-y") {
 				modifiedCmd += " -y"
@@ -293,33 +306,27 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 		}
 		cmd = exec.Command("cmd.exe", "/c", modifiedCmd)
 	} else {
-		// For apt-get, add -y flag
 		if strings.Contains(cmdStr, "apt-get install") && !strings.Contains(cmdStr, "-y") {
 			modifiedCmd = strings.Replace(cmdStr, "apt-get install", "apt-get install -y", 1)
 		}
-		// For apt install
 		if strings.Contains(cmdStr, "apt install") && !strings.Contains(cmdStr, "-y") {
 			modifiedCmd = strings.Replace(cmdStr, "apt install", "apt install -y", 1)
 		}
-		// For yum/dnf
 		if (strings.Contains(cmdStr, "yum install") || strings.Contains(cmdStr, "dnf install")) && !strings.Contains(cmdStr, "-y") {
 			modifiedCmd = strings.Replace(strings.Replace(modifiedCmd, "yum install", "yum install -y", 1), "dnf install", "dnf install -y", 1)
 		}
 		cmd = exec.Command("/bin/sh", "-c", modifiedCmd)
 	}
 
-	// Use NUL or /dev/null for stdin to prevent "reading input" errors
 	if runtime.GOOS == "windows" {
-		devNull, err := os.Open("NUL")
-		if err == nil {
+		if devNull, err := os.Open("NUL"); err == nil {
 			cmd.Stdin = devNull
 			defer devNull.Close()
 		} else {
 			cmd.Stdin = strings.NewReader("")
 		}
 	} else {
-		devNull, err := os.Open("/dev/null")
-		if err == nil {
+		if devNull, err := os.Open("/dev/null"); err == nil {
 			cmd.Stdin = devNull
 			defer devNull.Close()
 		} else {
@@ -330,10 +337,8 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 	cmd.Stdout = channel
 	cmd.Stderr = channel
 
-	// Run the command and capture the exit code
 	exitStatus := 0
 	if err := cmd.Run(); err != nil {
-		// Try to extract exit code from error
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exitErr.Sys().(interface{ ExitStatus() int }); ok {
 				exitStatus = status.ExitStatus()
@@ -346,13 +351,7 @@ func (s *SSHServer) executeCommand(channel ssh.Channel, cmdStr string) {
 		}
 	}
 
-	// Send exit status to the SSH client
-	// This prevents "exited without exit status or exit signal" errors
-	type exitStatusMsg struct {
-		Status uint32
-	}
-
-	// Send the exit-status request
+	type exitStatusMsg struct{ Status uint32 }
 	channel.SendRequest("exit-status", false, ssh.Marshal(&exitStatusMsg{
 		Status: uint32(exitStatus),
 	}))
@@ -413,27 +412,29 @@ func getOrCreateHostKey() (ssh.Signer, error) {
 	return signer, nil
 }
 
-// SSHClient provides SSH client functionality for admin
+// SSHClient connects to a worker's SSH server and executes commands.
+// Each command runs in its own exec session; working-directory state is
+// tracked client-side and prepended to every command.
 type SSHClient struct {
-	client  *ssh.Client
-	session *ssh.Session
+	client        *ssh.Client
+	cwd           string // client-tracked working directory
+	remoteWindows bool
+	mu            sync.Mutex
 }
 
-// NewSSHClient creates a new SSH client
+// NewSSHClient creates a new SSH client.
 func NewSSHClient() *SSHClient {
 	return &SSHClient{}
 }
 
-// Connect connects to an SSH server
+// Connect dials the SSH server and detects the remote OS.
 func (c *SSHClient) Connect(host string, port int, user, password string) error {
 	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(password),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // For demo; use proper verification in production
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.Password(password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
 	}
-
 	addr := fmt.Sprintf("%s:%d", host, port)
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
@@ -441,146 +442,177 @@ func (c *SSHClient) Connect(host string, port int, user, password string) error 
 	}
 	c.client = client
 
-	log.Printf("SSH Client: Connected to %s\n", addr)
+	// Probe OS: "ver" only works on Windows cmd.exe
+	if out, err2 := c.runExec("ver"); err2 == nil && strings.Contains(strings.ToLower(out), "windows") {
+		c.remoteWindows = true
+		log.Println("SSH Client: remote OS = Windows")
+	} else {
+		c.remoteWindows = false
+		log.Println("SSH Client: remote OS = Unix/Linux")
+	}
+
+	// Fetch the starting working directory — only store if it looks like a real path
+	var pwdOut string
+	if c.remoteWindows {
+		pwdOut, _ = c.runExec("cd")
+	} else {
+		pwdOut, _ = c.runExec("pwd")
+	}
+	candidate := strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(pwdOut))
+	// Only accept it as a cwd if it looks like a real path (starts with / or a drive letter)
+	if isValidPath(candidate) {
+		c.cwd = candidate
+	}
+	log.Printf("SSH Client: initial cwd = %q\n", c.cwd)
+
 	return nil
 }
 
-// ExecuteCommand executes a command on the remote server
-func (c *SSHClient) ExecuteCommand(cmd string) (string, error) {
+// runExec opens a fresh exec session, runs cmd, returns combined output.
+// This is the raw transport — no cwd injection, no filtering.
+func (c *SSHClient) runExec(cmd string) (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("not connected")
+	}
+	session, err := c.client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	log.Printf("SSH runExec: sending: %q\n", cmd)
+	out, err := session.CombinedOutput(cmd)
+	result := string(out)
+	log.Printf("SSH runExec: output=%q err=%v\n", result, err)
+
+	// Ignore "exit without status" noise — the output is still valid
+	if err != nil {
+		es := err.Error()
+		if strings.Contains(es, "exited without exit status") ||
+			strings.Contains(es, "exit status") ||
+			strings.Contains(es, "exit signal") {
+			return result, nil
+		}
+		return result, err
+	}
+	return result, nil
+}
+
+// ExecuteCommand runs cmdStr on the remote host inside the tracked cwd.
+// "cd" commands update the tracked cwd rather than being run directly.
+func (c *SSHClient) ExecuteCommand(cmdStr string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.client == nil {
 		return "", fmt.Errorf("not connected")
 	}
 
-	session, err := c.client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %w", err)
-	}
-	defer session.Close()
+	trimmed := strings.TrimSpace(cmdStr)
+	lower := strings.ToLower(trimmed)
 
-	// Request a pseudo-terminal for better command compatibility
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          0,     // Disable echo
-		ssh.TTY_OP_ISPEED: 14400, // Input speed
-		ssh.TTY_OP_OSPEED: 14400, // Output speed
-	}
+	// ── cd built-in ──────────────────────────────────────────────────────
+	if lower == "cd" || strings.HasPrefix(lower, "cd ") || strings.HasPrefix(lower, "cd\t") {
+		target := strings.TrimSpace(trimmed[2:])
 
-	// Request PTY - this helps with some interactive commands
-	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
-		// PTY failed, try without it
-		log.Printf("SSH Client: PTY request failed, continuing without: %v", err)
-	}
-
-	// Get combined output
-	output, err := session.CombinedOutput(cmd)
-
-	// Check if the error is just about missing exit status/signal
-	// This is a common issue with SSH sessions but doesn't mean the command failed
-	if err != nil {
-		// If we got output and the error is about exit status, ignore the error
-		errStr := err.Error()
-		if len(output) > 0 && (strings.Contains(errStr, "exit status") ||
-			strings.Contains(errStr, "exit signal") ||
-			strings.Contains(errStr, "exited without")) {
-			// Command produced output, ignore the exit status error
-			log.Printf("SSH Client: Command completed with output (ignoring exit status error)")
-			return string(output), nil
+		var probeCmd string
+		if c.remoteWindows {
+			if target == "" {
+				// bare "cd" on Windows prints current dir
+				probeCmd = "cd"
+			} else {
+				// change drive+dir, then print new dir
+				probeCmd = fmt.Sprintf("cd /d %s && cd", target)
+			}
+		} else {
+			if target == "" || target == "~" {
+				probeCmd = "cd ~ && pwd"
+			} else {
+				probeCmd = fmt.Sprintf("cd %s && pwd", target)
+			}
 		}
-		// Real error - return it along with any output we got
-		return string(output), fmt.Errorf("command failed: %w", err)
+
+		// Wrap with current cwd so relative paths resolve correctly
+		out, err := c.runExec(c.wrapWithCwd(probeCmd))
+		if err != nil {
+			return out, err
+		}
+		// Take the last non-empty line — on Windows "cd" prints the path, possibly
+		// with a trailing prompt line; on Linux pwd prints exactly one line.
+		candidate := lastNonEmptyLine(out)
+		if isValidPath(candidate) {
+			c.cwd = candidate
+			return candidate, nil
+		}
+		// cd failed (bad path etc.) — return the raw output as the error message
+		return strings.TrimSpace(out), nil
 	}
 
-	return string(output), nil
+	// ── regular command ──────────────────────────────────────────────────
+	full := c.wrapWithCwd(trimmed)
+	return c.runExec(full)
 }
 
-// ExecuteCommandWithInput executes a command and sends input to it
-func (c *SSHClient) ExecuteCommandWithInput(cmd string, input string) (string, error) {
-	if c.client == nil {
-		return "", fmt.Errorf("not connected")
+// wrapWithCwd prepends a cd command so every exec runs in the tracked directory.
+func (c *SSHClient) wrapWithCwd(cmd string) string {
+	if c.cwd == "" {
+		return cmd
 	}
-
-	session, err := c.client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %w", err)
+	if c.remoteWindows {
+		// cmd.exe /c receives the whole string; cd /d switches drive+dir
+		return fmt.Sprintf("cd /d %s && %s", c.cwd, cmd)
 	}
-	defer session.Close()
-
-	// Set up stdin pipe
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return "", fmt.Errorf("failed to get stdin: %w", err)
-	}
-
-	// Request a pseudo-terminal
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          0,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
-	}
-	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
-		log.Printf("SSH Client: PTY request failed: %v", err)
-	}
-
-	// Get output
-	output, err := session.StdoutPipe()
-	if err != nil {
-		return "", fmt.Errorf("failed to get stdout: %w", err)
-	}
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		return "", fmt.Errorf("failed to get stderr: %w", err)
-	}
-
-	// Start the command
-	if err := session.Start(cmd); err != nil {
-		return "", fmt.Errorf("failed to start command: %w", err)
-	}
-
-	// Send input if provided
-	if input != "" {
-		_, err = stdin.Write([]byte(input + "\n"))
-		if err != nil {
-			log.Printf("SSH Client: Failed to write input: %v", err)
-		}
-	}
-	stdin.Close()
-
-	// Read all output
-	var result []byte
-	buf := make([]byte, 4096)
-	for {
-		n, err := output.Read(buf)
-		if n > 0 {
-			result = append(result, buf[:n]...)
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	// Also read stderr
-	for {
-		n, err := stderr.Read(buf)
-		if n > 0 {
-			result = append(result, buf[:n]...)
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	session.Wait()
-	return string(result), nil
+	return fmt.Sprintf("cd %s && %s", c.cwd, cmd)
 }
 
-// Close closes the SSH connection
+// lastNonEmptyLine returns the last non-whitespace line in s.
+func lastNonEmptyLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// isValidPath returns true if s looks like an absolute filesystem path.
+func isValidPath(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Unix absolute path
+	if strings.HasPrefix(s, "/") {
+		return true
+	}
+	// Windows: "C:", "D:", etc.
+	if len(s) >= 2 && s[1] == ':' {
+		return true
+	}
+	return false
+}
+
+// Close terminates the SSH connection.
 func (c *SSHClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.client != nil {
-		return c.client.Close()
+		err := c.client.Close()
+		c.client = nil
+		return err
 	}
 	return nil
 }
 
-// IsConnected returns whether the client is connected
+// IsConnected reports whether there is an active connection.
 func (c *SSHClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.client != nil
+}
+
+// ExecuteCommandWithInput is kept for API compatibility.
+func (c *SSHClient) ExecuteCommandWithInput(cmd, input string) (string, error) {
+	return c.ExecuteCommand(cmd)
 }
